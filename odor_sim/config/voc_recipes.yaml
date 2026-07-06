@@ -1,0 +1,36 @@
+# VOC recipe table for OdorSim objects.
+#
+# Each named recipe is a list of VOC components emitted by an object. Every
+# component becomes one co-located GADEN source. gas_type must be one of the
+# MOX-supported gases for the e-nose to read it:
+#   ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone
+#
+# strength is an abstract 0..1 emission knob (mapped to GADEN
+# filamentPPMcenter / numFilaments_sec in odor_sim/envs/odor_profile.py).
+# local_offset (optional) is (x, y, z) meters in the object's local frame.
+
+recipes:
+  # Single-VOC references
+  ethanol_strong:
+    - {gas_type: ethanol, strength: 1.0}
+  ethanol_weak:
+    - {gas_type: ethanol, strength: 0.3}
+  acetone_strong:
+    - {gas_type: acetone, strength: 1.0}
+
+  # Multi-VOC mixtures (fruit-like: ethanol + acetone esters)
+  ripe_fruit:
+    - {gas_type: ethanol, strength: 0.8}
+    - {gas_type: acetone, strength: 0.4, local_offset: [0.0, 0.0, 0.02]}
+  overripe_fruit:
+    - {gas_type: ethanol, strength: 1.0}
+    - {gas_type: acetone, strength: 0.7}
+
+  # A distractor with no smell the MOX cares about at low strength
+  faint_alcohol:
+    - {gas_type: propanol, strength: 0.4}
+
+  # Hazard-like sharp odor
+  solvent_leak:
+    - {gas_type: acetone, strength: 0.9}
+    - {gas_type: propanol, strength: 0.6, local_offset: [0.0, 0.0, 0.01]}

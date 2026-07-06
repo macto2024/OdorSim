@@ -52,9 +52,44 @@ Then, in any new shell:
 source setup/activate.sh   # ROS 2 + GADEN + overlay + venv, in one step
 ```
 
+## Odor task authoring (Phase 3)
+
+`odor_sim.envs` is a small task-authoring layer over robosuite 1.5.2:
+
+- **`OdorProfile` / `VOCComponent`** (`envs/odor_profile.py`): an object emits a
+  mixture of VOCs; each component has a `gas_type`, an abstract `strength`
+  (0..1, mapped to GADEN `filamentPPMcenter` / `numFilaments_sec`), and an
+  optional local offset.
+- **`OdorObject`** (`envs/odor_object.py`): a robosuite `BoxObject` carrying an
+  `OdorProfile`. Build one from the recipe table with
+  `OdorObject.from_recipe(name, "ripe_fruit")`.
+- **VOC recipe table** (`config/voc_recipes.yaml` + `config/recipes.py`): named
+  mixtures using MOX-detectable gases (ethanol, methane, hydrogen, propanol,
+  chlorine, fluorine, acetone).
+- **`SceneBuilder`** (`envs/scene_builder.py`): flattens every object's VOCs
+  into an ordered GADEN source list, keeps the `object_id -> [source indices]`
+  map (feeds the Phase 4 bridge / `/gaden/source_poses`), and can export an
+  index-aligned GADEN scene (`export_gaden_scene`).
+- **`FrameMap`** (`config/frame_map.py`): affine `p_gaden = R @ p_robosuite + t`
+  built from a scenario config; the default aligns the robosuite table with the
+  `10x6_uniform` room.
+- **`OdorLift`** (`envs/odor_lift.py`): a Lift-style Panda task whose cube is an
+  `OdorObject`. Exposes the EE odor-sensor pose (`get_enose_site_pose`), object
+  world poses, and per-step GADEN source poses. Every observation carries the
+  task `instruction` string.
+
+Quick check (headless):
+
+```bash
+source setup/activate.sh
+python tests/test_phase3.py     # prints PASS/FAIL for 7 checks
+```
+
 ## Status
 
-Phases 0-1 complete (repo skeleton + setup scripts). Remaining phases build the
-real-time GADEN server, robosuite odor tasks, the teleop/bridge, dataset
-recording, and the training-ready eval hooks. Each phase is delivered with a
-self-contained test procedure for verification before moving on.
+Phases 0-3 complete: repo skeleton + setup scripts (0-1), the real-time
+moving-source GADEN server `odor_gaden_rt` (2), and the robosuite odor
+task-authoring layer in `odor_sim.envs` (3). Remaining phases build the
+teleop/bridge, dataset recording, and the training-ready eval hooks. Each phase
+is delivered with a self-contained test procedure for verification before
+moving on.
