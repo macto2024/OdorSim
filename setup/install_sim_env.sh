@@ -59,8 +59,11 @@ python -m pip install -e "$REPO_ROOT"
 # ---------------- 3. smoke test ---------------------------------------------
 echo "==> smoke test (sourcing ROS so rclpy is visible) ..."
 if [ -f "$ROS_SETUP" ]; then
+  # ROS setup scripts reference unset vars; relax nounset while sourcing.
+  set +u
   # shellcheck disable=SC1091
   source "$ROS_SETUP"
+  set -u
 else
   echo "!! $ROS_SETUP not found - run install_ros_gaden.sh first for rclpy." >&2
 fi

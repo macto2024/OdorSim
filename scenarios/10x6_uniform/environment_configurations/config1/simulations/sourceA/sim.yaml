@@ -1,0 +1,23 @@
+# One live gas source (ethanol point source). The position set here is only
+# the INITIAL position: odor_gaden_rt mutates it at runtime from /gaden/source_poses.
+source:
+  sourceType: point
+  position: [2.0, 3.0, 0.5]
+  gasType: 0            # ethanol
+deltaTime: 0.05         # s per AdvanceTimestep -> matches a 20 Hz control loop
+windIterationDeltaTime: 1
+temperature: 298
+pressure: 1
+filamentPPMcenter: 20
+filamentInitialSigma: 10
+filamentGrowthGamma: 10
+filamentNoise_std: 0.02
+numFilaments_sec: 20
+expectedNumIterations: 24000   # preallocation hint (~20 min at 20 Hz)
+saveResults: false             # real-time use only; nothing written to disk
+saveDeltaTime: 0.5
+preCalculateConcentrations: false
+windLooping:
+  loop: false
+  from: 0
+  to: 0

@@ -1,0 +1,13 @@
+# OdorSim Phase 2 test scenario: 10x6 m empty room with uniform wind.
+# Geometry reused from gaden's test_env 10x6_empty_room (walls + door outlets).
+# Parsed by gaden::EnvironmentConfigMetadata; preprocessed at node startup
+# by odor_gaden_rt (no separate gaden_preprocessing run needed).
+models:
+  - ../../cad_models/10x6_walls.stl
+outlets_models:
+  - ../../cad_models/10x6_door_left.stl
+  - ../../cad_models/10x6_door_right.stl
+unprocessed_wind_files: ../../wind_simulations/uniform/wind
+empty_point: [0.5, 0.95, 0.5]
+cell_size: 0.1
+uniformWind: true

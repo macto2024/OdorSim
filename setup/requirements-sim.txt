@@ -1,7 +1,9 @@
 # Simulation-side Python deps (installed into the .venv by install_sim_env.sh).
 # Kept loose except robosuite, which is pinned per project decision.
 robosuite==1.5.2
-mujoco>=3.1,<4
+mujoco==3.9.0
+# numba (via robosuite) needs coverage.types.Tracer; Ubuntu's system coverage is too old.
+coverage>=7.6
 lerobot
 numpy
 opencv-python

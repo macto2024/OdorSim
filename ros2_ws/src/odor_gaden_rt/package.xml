@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>odor_gaden_rt</name>
+  <version>0.1.0</version>
+  <description>
+    Real-time GADEN server with moving gas sources. Wraps gaden::Scene
+    (RunningSimulation) so a co-simulated robot (robosuite) can move odor
+    sources at runtime and query per-gas concentrations at the end effector.
+  </description>
+  <maintainer email="odorsim@example.com">OdorSim</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>gaden_common</depend>
+  <depend>gaden_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

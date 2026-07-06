@@ -1,0 +1,11 @@
+# Scene = the list of live simulations odor_gaden_rt runs together.
+# One entry per gas source; index order here defines the source index used
+# by /gaden/source_poses (pose i moves the source of simulation i).
+playback_initial_iteration: 0
+playback_loop:
+  loop: false
+  from: 0
+  to: 0
+simulations:
+  - sim: sourceA
+    gas_color: [0.0, 0.8, 0.2]

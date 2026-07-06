@@ -110,8 +110,11 @@ if [ -n "${CONDA_PREFIX:-}" ]; then
     source "$CONDA_BASE/etc/profile.d/conda.sh"; conda deactivate || true
   fi
 fi
+# ROS/colcon setup scripts reference unset vars; relax nounset while sourcing.
+set +u
 # shellcheck disable=SC1091
 source "/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
+set -u
 cd "$GADEN_DIR"
 colcon build --symlink-install --packages-select \
   olfaction_msgs \
@@ -120,8 +123,10 @@ colcon build --symlink-install --packages-select \
   simulated_gas_sensor simulated_tdlas test_env
 
 # ---------------- 7. Build OUR overlay (sources gaden install) ----------------
+set +u
 # shellcheck disable=SC1091
 source "$GADEN_DIR/install/setup.bash"
+set -u
 # Only build if the overlay actually contains buildable ROS packages
 # (package.xml). Before Phase 2 it is an empty placeholder -> skip cleanly.
 if find "$OVERLAY_WS/src" -name package.xml 2>/dev/null | grep -q .; then
