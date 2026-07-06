@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odor_sim"
+version = "0.0.1"
+description = "Co-simulation of GADEN odor dispersion with robosuite for odor-aware VLA data collection"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+# NOTE: heavy sim deps (robosuite, mujoco, lerobot) are installed by
+# setup/install_sim_env.sh into a system-site-packages venv (so ROS 2 rclpy is
+# visible). They are intentionally NOT hard-pinned here to avoid resolver
+# conflicts with the ROS-provided packages. See setup/requirements-sim.txt.
+dependencies = [
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+include = ["odor_sim*"]
+exclude = ["gaden*", "ros2_ws*", "simulation*", "scenarios*"]

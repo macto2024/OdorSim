@@ -1,0 +1,34 @@
+# --- Cloned upstream dependencies (fetched by setup/install_ros_gaden.sh) ---
+# GADEN is cloned+built in place; it is NOT part of this repo.
+/gaden/
+/ros2_ws/src/gaden/
+/ros2_ws/src/olfaction_msgs/
+
+# --- colcon build artifacts ---
+/ros2_ws/build/
+/ros2_ws/install/
+/ros2_ws/log/
+build/
+install/
+log/
+
+# --- Deprecated playground (kept locally for cherry-picking, not tracked) ---
+/simulation/
+
+# --- Python envs & packaging ---
+.venv/
+venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.python-version
+
+# --- Datasets & large artifacts ---
+/datasets/
+*.mp4
+MUJOCO_LOG.TXT
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
