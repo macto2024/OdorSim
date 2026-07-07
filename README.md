@@ -85,11 +85,66 @@ source setup/activate.sh
 python tests/test_phase3.py     # prints PASS/FAIL for 7 checks
 ```
 
+## Bridge + e-nose sensor model + teleop (Phase 4)
+
+`odor_sim.bridge` couples a robosuite env to the running GADEN server, and
+`odor_sim.sensors` is the shared MOX/PID e-nose model.
+
+- **`GadenBridge`** (`bridge/gaden_bridge.py`): per control step it publishes the
+  object-expanded source poses to `/gaden/source_poses`, ticks `/gaden/step`
+  once (lockstep, confirmed via `/gaden/sim_time`), and queries `/odor_value`
+  for the ground-truth per-gas ppm at the EE. `bridge.step_env(env)` returns
+  `{sim_time, ee_pos_world, ee_pos_gaden, source_poses_gaden, ppm, gas_types}`.
+- **`export_scene`** (`bridge/export_scene.py`): writes a GADEN scene whose
+  source list matches an env index-for-index, so `/gaden/source_poses` lines up
+  with `env.get_gaden_source_poses()`. Run it before starting the server.
+- **MOX/PID model** (`sensors/mox_pid.py`): pure-Python port of GADEN's
+  `fake_gas_sensor.cpp` sensitivity + transient, plus a voltage divider.
+  `ContinuousEnose` (always exposed) and `SamplingEnose` (valve-gated by the
+  ternary `enose_state`) both derive from the same ppm(t); `synthesize_*`
+  helpers run them offline over a stored ppm series.
+- **Teleop** (`bridge/teleop.py`): `TeleopSession` drives `OdorLift` with a
+  keyboard/SpaceMouse while co-stepping the plume, recording action +
+  `enose_state` token + auto-hold/sampling mask + raw ppm(t) + instruction per
+  episode. E-nose keys: `1` sample (auto-hold ~7 s), `0` idle, `2` filter.
+
+### Test procedures
+
+The e-nose model test is standalone; the bridge and teleop tests need the
+server running in lockstep with a matching scene.
+
+```bash
+# 4c — sensor model (no ROS, no robosuite)
+source setup/activate.sh
+python tests/test_phase4_sensor.py        # 7/7 checks
+
+# 4a/4b — start the server once (Terminal 1)
+source setup/activate.sh
+python -m odor_sim.bridge.export_scene \
+    --config-dir scenarios/10x6_uniform/environment_configurations/config1 \
+    --scene-id rt_scene --recipe ripe_fruit
+ros2 run odor_gaden_rt rt_server --ros-args \
+    -p scenarioPath:=$PWD/scenarios/10x6_uniform/environment_configurations/config1 \
+    -p sceneID:=rt_scene
+
+# 4a — bridge, 4b — teleop recording (Terminal 2)
+source setup/activate.sh
+python tests/test_phase4_bridge.py        # 6/6 checks
+python tests/test_phase4_teleop.py        # 11/11 checks
+```
+
+Interactive collection (needs a display; server running as above):
+
+```bash
+python -m odor_sim.bridge.teleop --recipe ripe_fruit --device keyboard
+```
+
 ## Status
 
-Phases 0-3 complete: repo skeleton + setup scripts (0-1), the real-time
-moving-source GADEN server `odor_gaden_rt` (2), and the robosuite odor
-task-authoring layer in `odor_sim.envs` (3). Remaining phases build the
-teleop/bridge, dataset recording, and the training-ready eval hooks. Each phase
+Phases 0-4 complete: repo skeleton + setup scripts (0-1), the real-time
+moving-source GADEN server `odor_gaden_rt` (2), the robosuite odor
+task-authoring layer in `odor_sim.envs` (3), and the rclpy bridge + shared
+MOX/PID e-nose model + teleop collection app (4). Remaining phases build the
+LeRobot dataset recording (5) and the training-ready eval hooks (6). Each phase
 is delivered with a self-contained test procedure for verification before
 moving on.

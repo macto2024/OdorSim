@@ -84,3 +84,50 @@ Monitor simulated time:
 ```bash
 ros2 topic echo /gaden/sim_time
 ```
+
+## Moving sources at runtime
+
+Publish to `/gaden/source_poses` to move sources while the simulation runs.
+Pose *i* in the array sets the position of source *i*; orientation is ignored.
+Positions outside the environment bounds are ignored and logged as a warning.
+
+Run in timer mode so the plume updates continuously:
+
+```bash
+source setup/activate.sh
+ros2 run odor_gaden_rt rt_server --ros-args \
+  -p scenarioPath:=$PWD/scenarios/10x6_uniform/environment_configurations/config1 \
+  -p stepOnTimer:=true
+```
+
+Let the plume build for a few seconds, then snap source 0 to the opposite side
+of the room. The filament cloud will stop growing near `(2, 3)` and start
+growing near `(8, 1)`.
+
+```bash
+ros2 topic pub --once /gaden/source_poses geometry_msgs/msg/PoseArray "{
+  header: {frame_id: 'map'},
+  poses: [{position: {x: 8.0, y: 1.0, z: 0.5}}]
+}"
+```
+
+Re-broadcast the same pose to keep the source pinned to the new location:
+
+```bash
+ros2 topic pub /gaden/source_poses geometry_msgs/msg/PoseArray "{
+  header: {frame_id: 'map'},
+  poses: [{position: {x: 8.0, y: 1.0, z: 0.5}}]
+}" --rate 10
+```
+
+For multiple sources, include one pose per source:
+
+```bash
+ros2 topic pub --once /gaden/source_poses geometry_msgs/msg/PoseArray "{
+  header: {frame_id: 'map'},
+  poses: [
+    {position: {x: 8.0, y: 1.0, z: 0.5}},
+    {position: {x: 7.0, y: 4.0, z: 0.5}}
+  ]
+}"
+```
