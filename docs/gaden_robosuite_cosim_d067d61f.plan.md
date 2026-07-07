@@ -4,19 +4,22 @@ overview: Build a clean, replicable git repo that co-simulates GADEN odor disper
 todos:
   - id: repo
     content: "Phase 0: Stand up the project git repo skeleton (ros2_ws/src for our packages, odor_sim python package, scenarios, setup/, pyproject, .gitignore) - do NOT vendor gaden or copy the old simulation/ folder"
-    status: pending
+    status: completed
   - id: setup-scripts
     content: "Phase 1: Author reproducible setup scripts - install_ros_gaden.sh (adapt existing setup_gaden.sh to clone gaden+olfaction_msgs into ros2_ws/src and colcon-build everything incl. our packages) and install_sim_env.sh (venv --system-site-packages over system py3.12 with ROS sourced; robosuite 1.5.2 + mujoco + lerobot)"
-    status: pending
+    status: completed
   - id: rt-node
     content: "Phase 2: Create odor_gaden_rt C++ ROS2 package wrapping gaden::Scene (RunningSceneMetadata): sub /gaden/source_poses to mutate source->sourcePosition, /gaden/step to AdvanceTimestep, serve /odor_value via SampleConcentrations"
-    status: pending
+    status: completed
   - id: tasks
     content: "Phase 3: robosuite 1.5.2 task-authoring framework in odor_sim/envs - OdorObject class carrying a multi-VOC OdorProfile (one object -> multiple co-located GADEN sources), object->source index map, EE sensor site, per-task language instruction; selectively port RM65 robot"
-    status: pending
+    status: completed
   - id: bridge
     content: "Phase 4: (4a) rclpy bridge publishing expanded source poses + step tick and querying /odor_value for ground-truth ppm(t); (4b) teleop collection (keyboard/SpaceMouse + enose_state key, auto-hold 7s on sample); (4c) shared Python MOX/PID sensor model used offline + at eval to derive continuous & sampling voltage from ppm(t)"
-    status: pending
+    status: completed
+  - id: make-facade
+    content: "Phase 4.5: Unified odorsim.make() facade - task registry + scenario resolver, GadenServerManager subprocess (spawn/health-check/kill odor_gaden_rt), and OdorCosimSession (composition of env + bridge + server) exporting the GADEN scene from env.scene_builder (single source of truth). One call runs export + server + bridge; teleop uses it (single command, no second terminal). Phase 4.5f adds optional OdorMonitor (live terminal log + matplotlib ppm plot via make(odor_monitor=...) and teleop --odor-monitor). See docs/odorsim_make_unified_cosim.plan.md"
+    status: completed
   - id: dataset
     content: "Phase 5: mining writes raw ppm(t) + state + action(incl enose token) + auto-hold mask + instruction (NO voltage at mine time); offline feature synth derives continuous/sampling voltage + per-window odor class label; VLA-agnostic LeRobot dataset, no baked normalization; document Isaac portability"
     status: pending
@@ -196,6 +199,46 @@ An interactive, self-contained teleop tool (built on robosuite's `devices` + on-
   - **Sampling voltage**: an **e-nose state machine** driven by the recorded/lived `enose_state` - `idle(0)` baseline, `sample(1)` integrates the transient over the ~7 s window, `filter(-1)` purges toward baseline; emits per-window traces + metadata (trigger step, duration, **ground-truth odor class label**).
   - Also always store **raw ppm(t)** so any other sensor mode/params can be re-synthesized offline.
 
+## Phase 4.5 - Unified `odorsim.make()` co-simulation facade
+
+Full spec: [odorsim_make_unified_cosim.plan.md](odorsim_make_unified_cosim.plan.md).
+Phase 4 left the co-sim as a three-terminal ritual (export scene -> `ros2 run
+odor_gaden_rt` -> connect bridge). Phase 4.5 hides that behind one call so task
+authors and data collectors swap `env=`/`recipe=` without touching ROS:
+
+```python
+import odor_sim as odorsim
+with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
+    obs = cosim.reset()
+    obs, reward, done, info = cosim.step(action)   # info["ppm"] at the EE
+```
+
+- **Composition, not inheritance**: `OdorCosimSession` (`odor_sim/runtime/session.py`)
+  wraps env + `GadenBridge` + `GadenServerManager`; it does not subclass the
+  robosuite env. `step()` order: `env.step(action)` -> publish post-step source
+  poses -> `/gaden/step` (lockstep) -> query `/odor_value`; ppm/sim_time/source
+  poses land in `info`.
+- **Single source of truth**: the GADEN scene is exported from the env's own
+  `scene_builder` after construction, so the server's source *i* is the env's
+  source *i* index-for-index — a parallel `--recipe` list can never desync.
+- **Managed server**: `GadenServerManager` (`odor_sim/runtime/gaden_server.py`)
+  spawns `odor_gaden_rt` in lockstep as a subprocess, waits for the `odor_gaden_rt
+  ready.` log line + the `/odor_value` service, redirects `ROS_LOG_DIR` to a
+  writable path, and SIGTERM/SIGKILLs the process group on close. One server per
+  session; parallel/vectorized envs are out of scope for v1.
+- **Registry** (`odor_sim/envs/registry.py`): `REGISTERED_TASKS` string->class
+  map + `resolve_scenario()` name->config-dir resolver.
+- **Resolved v1 decisions**: scene exported into the scenario config dir
+  (default `scene_id = f"{env}_{recipe}"`, gitignored) so relative CAD/wind
+  paths keep resolving; `connect_only=True` attaches to an already-running
+  server; ppm exposed in `info` (final schema fixed in Phase 5); canonical
+  import is `import odor_sim as odorsim`.
+- **Teleop** now builds on `odorsim.make()`, so `python -m odor_sim.bridge.teleop
+  --env OdorLift --recipe ripe_fruit` is a single command (no server terminal).
+- **Room coupling** stays Tier 1 for v1 (fixed `10x6_uniform` scenario + affine
+  FrameMap). `FrameMap.from_table` + generated rooms are deferred (Phase 4.5e /
+  v2), tracked in the sub-plan.
+
 ## Phase 5 - VLA-agnostic dataset recording + Isaac portability (`odor_sim/recording`)
 
 **Is the data different per VLA?** Mostly no. SmolVLA, pi0, OpenVLA, etc. all consume the same *ingredients* - one or more RGB frames, a language instruction, a proprioceptive **state** vector, and an **action** vector at a fixed control frequency. What differs per model is applied at *load/train* time, not capture time: image count/resolution, input **normalization** (mean/std or quantile), and the **action space** (absolute vs delta EE pose, joint deltas, gripper encoding). So we **capture a rich superset once, keep it VLA-agnostic, and adapt at training time** (Phase 6). The only thing to decide now is capture *content*, not the model.
@@ -223,6 +266,7 @@ Make the data trainable and the loop closable without committing to a model.
 1. `colcon build` from `ros2_ws` compiles GADEN + `odor_gaden_rt`; node boots and `ros2 service call /odor_value ...` returns rising ppm near a static source.
 2. Publishing new `/gaden/source_poses` shifts the concentration peak (plume follows the object).
 3. Loading a multi-VOC `OdorObject` spawns co-located sources; moving the object moves all its VOC sources together; the EE sensor shows a non-trivial mixture response as the arm approaches.
+3.5. `odorsim.make("OdorLift")` brings up the full co-sim (env + exported scene + spawned `odor_gaden_rt` + connected bridge) in one call; `cosim.step()` advances GADEN in lockstep and returns rising ppm at the EE; `close()` tears the server down cleanly.
 4. One rollout yields BOTH a continuous voltage stream AND a triggered sampling-window trace, derived from the same stored ppm(t), plus the ternary `enose_state` action recorded.
 5. One full labeled LeRobot episode written, loadable, and schema-valid against `SCHEMA.md` (all odor channels present).
 6. Closed-loop eval harness drives the reference `PolicyAdapter` live against the co-sim for a full episode, in each of the `no-odor`/`continuous`/`sampling` configs.

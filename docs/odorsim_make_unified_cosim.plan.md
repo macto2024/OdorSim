@@ -7,7 +7,7 @@ overview: >
   advances MuJoCo physics and GADEN dispersion in lockstep. Goal is task switching
   by string/config without manually running export_scene, rt_server, and bridge in
   separate terminals.
-status: proposed
+status: implemented (4.5a-4.5d done; 4.5f live ppm monitor done; 4.5e room-coupling helpers deferred)
 depends_on:
   - Phase 0–4 complete (repo, setup, odor_gaden_rt, odor_sim/envs, bridge, sensors, teleop)
   - docs/gaden_robosuite_cosim_d067d61f.plan.md (master architecture)
@@ -337,6 +337,35 @@ class GadenServerManager:
 
 - `FrameMap.from_table(table_full_size, table_offset, scenario_dir, gaden_anchor=...)`.
 - Bounds validation helper on `OdorCosimSession.reset()`.
+
+### Phase 4.5f — Live odor monitor (log + plot)
+
+**Goal:** optional operator/debug UX while co-simulating or teleoperating — terminal
+live log of per-VOC ppm at the EE plus a **separate matplotlib window** (one colored
+line per gas vs GADEN `sim_time`). Not part of the Phase 5 LeRobot schema.
+
+**Deliverables:**
+
+- `odor_sim/runtime/odor_monitor.py` — `OdorMonitor` with `record(sim_time, ppm)`,
+  rolling history, terminal log, matplotlib live figure.
+- `make(..., odor_monitor=...)` kwarg; attach to `OdorCosimSession.odor_monitor`.
+- `OdorCosimSession.reset()` / `step()` / `close()` call monitor lifecycle hooks.
+- `teleop --odor-monitor` forwards to `make()`; `TeleopSession.step()` records after
+  `bridge.step_env()` (teleop steps bridge before env — monitor hooks post-query only).
+- `tests/test_odor_monitor.py` (unit); log-mode smoke in cosim tests.
+
+**API:**
+
+```python
+odorsim.make("OdorLift", odor_monitor=True)       # log + plot
+odorsim.make("OdorLift", odor_monitor="log")      # headless-friendly
+odorsim.make("OdorLift", odor_monitor={"log": True, "plot": True, "history_s": 120})
+```
+
+**PASS:** unit tests green; `odor_monitor="log"` during `test_make_cosim` prints gas
+names; over VNC, teleop opens MuJoCo viewer + second matplotlib ppm window.
+
+**Non-goals:** MOX voltage plot, RViz plume, writing monitor history into `episode.npz`.
 
 ---
 

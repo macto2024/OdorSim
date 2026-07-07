@@ -7,6 +7,60 @@ demonstrations and training/evaluating VLA policies that fuse an e-nose sense.
 See [docs/gaden_robosuite_cosim_d067d61f.plan.md](docs/gaden_robosuite_cosim_d067d61f.plan.md)
 for the full design and phase plan.
 
+## Quick start (unified `make()`)
+
+One call brings up the whole co-simulation — it builds the robosuite task,
+exports a matching GADEN scene, spawns the `odor_gaden_rt` server in lockstep,
+and connects the bridge. No separate server terminal:
+
+```bash
+source setup/activate.sh
+python - <<'EOF'
+import odor_sim as odorsim
+
+with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
+    obs = cosim.reset()
+    print(obs["instruction"])
+    for _ in range(100):
+        obs, reward, done, info = cosim.step(cosim.zero_action())
+    print(info["ppm"])          # ground-truth per-gas ppm at the EE
+EOF
+```
+
+`make()` must be run from a shell that has sourced `setup/activate.sh` (so the
+server subprocess inherits ROS + the GADEN overlay). It returns an
+`OdorCosimSession` (env + bridge + server) whose `step()` adds `info["ppm"]`,
+`info["sim_time"]`, and `info["gaden_source_poses"]`. The GADEN scene is always
+exported from the env's `SceneBuilder`, so source indices can never desync from
+`env.get_gaden_source_poses()`. Useful options: `auto_start_gaden=False` (dry
+run: build env + export scene, no ROS), `connect_only=True` (attach to a
+server you started yourself), `scenario="..."`, `has_renderer=True`,
+`odor_monitor=True` (live terminal ppm log + separate matplotlib plot window).
+
+### Live ppm monitor (teleop / VNC)
+
+With a display (local desktop or [VNC](VNC_SETUP.md)) you can open a second
+window that plots per-VOC ppm at the EE vs GADEN sim time:
+
+```bash
+export DISPLAY=:1   # if using VNC on the VM
+source setup/activate.sh
+
+python -m odor_sim.bridge.teleop \
+    --env OdorLift --recipe ripe_fruit --device keyboard \
+    --odor-monitor
+```
+
+`--odor-monitor log` prints ppm lines only (headless-friendly).
+`--odor-monitor plot` opens the graph without terminal spam.
+
+Programmatic equivalent:
+
+```python
+with odorsim.make("OdorLift", recipe="ripe_fruit", has_renderer=True, odor_monitor=True) as cosim:
+    ...
+```
+
 ## Repository layout
 
 ```
@@ -103,22 +157,36 @@ python tests/test_phase3.py     # prints PASS/FAIL for 7 checks
   `ContinuousEnose` (always exposed) and `SamplingEnose` (valve-gated by the
   ternary `enose_state`) both derive from the same ppm(t); `synthesize_*`
   helpers run them offline over a stored ppm series.
-- **Teleop** (`bridge/teleop.py`): `TeleopSession` drives `OdorLift` with a
+- **Teleop** (`bridge/teleop.py`): `TeleopSession` drives a task with a
   keyboard/SpaceMouse while co-stepping the plume, recording action +
   `enose_state` token + auto-hold/sampling mask + raw ppm(t) + instruction per
-  episode. E-nose keys: `1` sample (auto-hold ~7 s), `0` idle, `2` filter.
+  episode. E-nose keys: `1` sample (auto-hold ~7 s), `0` idle, `2` filter. Since
+  Phase 4.5 it uses `odorsim.make()`, so it spawns its own GADEN server (single
+  command, no second terminal).
 
 ### Test procedures
 
-The e-nose model test is standalone; the bridge and teleop tests need the
-server running in lockstep with a matching scene.
+Since Phase 4.5 the co-sim tests spawn their own server via `make()`, so most
+run from a single terminal. Only the legacy `test_phase4_bridge.py` still
+attaches to a server you start by hand.
 
 ```bash
-# 4c — sensor model (no ROS, no robosuite)
 source setup/activate.sh
-python tests/test_phase4_sensor.py        # 7/7 checks
 
-# 4a/4b — start the server once (Terminal 1)
+# Standalone — no ROS server needed
+python tests/test_phase4_sensor.py        # 4c e-nose model     — 7/7
+python tests/test_make_export.py          # 4.5a make() dry run — 3/3
+python tests/test_odor_monitor.py       # 4.5f monitor unit  — 6/6
+
+# Auto-start the server (single terminal, via odorsim.make)
+python tests/test_make_cosim.py           # 4.5c full co-sim    — 7/7
+python tests/test_phase4_teleop.py        # 4b teleop recording — 11/11
+```
+
+Legacy Phase 4a bridge test (needs the server started manually):
+
+```bash
+# Terminal 1
 source setup/activate.sh
 python -m odor_sim.bridge.export_scene \
     --config-dir scenarios/10x6_uniform/environment_configurations/config1 \
@@ -127,24 +195,26 @@ ros2 run odor_gaden_rt rt_server --ros-args \
     -p scenarioPath:=$PWD/scenarios/10x6_uniform/environment_configurations/config1 \
     -p sceneID:=rt_scene
 
-# 4a — bridge, 4b — teleop recording (Terminal 2)
+# Terminal 2
 source setup/activate.sh
 python tests/test_phase4_bridge.py        # 6/6 checks
-python tests/test_phase4_teleop.py        # 11/11 checks
 ```
 
-Interactive collection (needs a display; server running as above):
+Interactive collection (needs a display; server auto-started by teleop):
 
 ```bash
-python -m odor_sim.bridge.teleop --recipe ripe_fruit --device keyboard
+python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device keyboard --odor-monitor
 ```
+
+See [VNC_SETUP.md](VNC_SETUP.md) for remote display setup on the VM.
 
 ## Status
 
-Phases 0-4 complete: repo skeleton + setup scripts (0-1), the real-time
+Phases 0-4.5 complete: repo skeleton + setup scripts (0-1), the real-time
 moving-source GADEN server `odor_gaden_rt` (2), the robosuite odor
-task-authoring layer in `odor_sim.envs` (3), and the rclpy bridge + shared
-MOX/PID e-nose model + teleop collection app (4). Remaining phases build the
-LeRobot dataset recording (5) and the training-ready eval hooks (6). Each phase
-is delivered with a self-contained test procedure for verification before
-moving on.
+task-authoring layer in `odor_sim.envs` (3), the rclpy bridge + shared MOX/PID
+e-nose model + teleop collection app (4), and the unified `odorsim.make()`
+co-simulation facade that spawns the server and wires the bridge from one call
+(4.5), including optional live ppm log/plot via `odor_monitor` (4.5f). Remaining
+phases build the LeRobot dataset recording (5) and the training-ready eval hooks (6). Each phase is delivered with a self-contained
+test procedure for verification before moving on.

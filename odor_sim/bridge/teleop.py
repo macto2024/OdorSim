@@ -20,9 +20,10 @@ Auto-hold: one ``sample`` press freezes the arm for the sample window (motion
 ignored) so every sniff is a clean stationary dwell; those steps carry a
 ``sampling_active`` mask.
 
-Run (needs odor_gaden_rt in lockstep + a matching scene; see README)::
+Since Phase 4.5 the GADEN server is spawned automatically via ``odor_sim.make``,
+so a single command is enough (no separate server terminal)::
 
-    python -m odor_sim.bridge.teleop --recipe ripe_fruit --device keyboard
+    python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device keyboard --odor-monitor
 """
 
 from __future__ import annotations
@@ -34,11 +35,9 @@ from pathlib import Path
 
 import numpy as np
 
-from odor_sim.bridge.gaden_bridge import GadenBridge
-
 # enose tokens
 SAMPLE, IDLE, FILTER = 1, 0, -1
-CONFIG_DIR = "scenarios/10x6_uniform/environment_configurations/config1"
+DEFAULT_SCENARIO = "10x6_uniform"
 
 
 class EpisodeRecorder:
@@ -103,37 +102,48 @@ class EpisodeRecorder:
 
 
 class TeleopSession:
-    """Owns the env + bridge and the shared per-step control/record logic.
+    """Owns the co-sim (env + bridge + server) and the per-step record logic.
+
+    The whole GADEN stack is brought up by :func:`odor_sim.make`, so there is no
+    separate server terminal: constructing a ``TeleopSession`` with
+    ``use_bridge=True`` exports the scene, spawns ``odor_gaden_rt`` in lockstep,
+    and connects the bridge.
 
     Args:
-        recipe: VOC recipe for the OdorLift cube.
-        config_dir: GADEN scenario config directory (for the frame map).
+        env: registered task name (e.g. ``"OdorLift"``).
+        recipe: VOC recipe for the task object.
+        scenario: logical GADEN scenario name (or a config-dir path).
         sample_hold_s: auto-hold duration on a ``sample`` press (seconds).
         use_bridge: co-step GADEN and record ppm. If False, run arm-only
-            (ppm recorded as zeros) - useful to sanity-check driving alone.
+            (no server, ppm recorded as zeros) - to sanity-check driving alone.
         out_dir: dataset output directory.
     """
 
     def __init__(
         self,
+        env: str = "OdorLift",
         recipe: str = "ripe_fruit",
-        config_dir: str = CONFIG_DIR,
+        scenario: str = DEFAULT_SCENARIO,
         sample_hold_s: float = 7.0,
         use_bridge: bool = True,
         out_dir: str = "datasets/teleop",
         has_renderer: bool = False,
         control_freq: int = 20,
+        odor_monitor=False,
     ):
-        from odor_sim.envs.odor_lift import OdorLift
+        import odor_sim as odorsim
 
         self.control_freq = control_freq
         self.sample_hold_steps = int(round(sample_hold_s * control_freq))
         self.out_dir = out_dir
 
-        self.env = OdorLift(
-            robots="Panda",
+        self.cosim = odorsim.make(
+            env,
             recipe=recipe,
-            scenario_config_dir=config_dir,
+            scenario=scenario,
+            auto_start_gaden=use_bridge,
+            bridge=use_bridge,
+            odor_monitor=odor_monitor if use_bridge else False,
             enose_site_offset=(0.0, 0.0, -0.02),
             has_renderer=has_renderer,
             has_offscreen_renderer=False,
@@ -141,29 +151,21 @@ class TeleopSession:
             control_freq=control_freq,
             horizon=100000,
         )
+        self.env = self.cosim.env
+        self.bridge = self.cosim.bridge
+
         # De-duplicate gas names (the server returns one ppm per *unique* gas),
         # preserving source order.
         self.gas_types = list(
             dict.fromkeys(s.component.gaden_gas_name() for s in self.env.scene_builder.sources)
         )
 
-        self.bridge = None
-        if use_bridge:
-            self.bridge = GadenBridge(step_timeout=2.0)
-            if not self.bridge.wait_for_server(timeout=10.0):
-                raise RuntimeError(
-                    "odor_gaden_rt /odor_value not available. Start it in lockstep "
-                    "mode with a scene matching this env (see export_scene)."
-                )
-
         # auto-hold state
         self._hold_left = 0
 
     # ------------------------------------------------------------------ #
     def close(self):
-        if self.bridge is not None:
-            self.bridge.close()
-        self.env.close()
+        self.cosim.close()
 
     def _proprio_state(self, obs) -> np.ndarray:
         keys = [k for k in obs if k.startswith("robot0_") and isinstance(obs[k], np.ndarray)]
@@ -196,6 +198,8 @@ class TeleopSession:
         if self.bridge is not None:
             rec = self.bridge.step_env(self.env)  # publishes poses, ticks, queries EE ppm
             sim_time, ppm = rec["sim_time"], rec["ppm"]
+            if self.cosim.odor_monitor is not None:
+                self.cosim.odor_monitor.record(sim_time, ppm)
         else:
             sim_time, ppm = 0.0, {}
 
@@ -234,6 +238,8 @@ class TeleopSession:
         instruction = instruction or self.env.instruction
         recorder = self._new_recorder(instruction)
         self.env.reset()
+        if self.cosim.odor_monitor is not None:
+            self.cosim.odor_monitor.reset()
         gripper_dof = self._gripper_dof()
 
         for a, e in zip(arm_actions, enose_schedule):
@@ -265,6 +271,8 @@ class TeleopSession:
             instruction = self.env.instruction
             recorder = self._new_recorder(instruction)
             self.env.reset()
+            if self.cosim.odor_monitor is not None:
+                self.cosim.odor_monitor.reset()
             self.env.render()
             device.start_control()
             self._hold_left = 0
@@ -353,21 +361,36 @@ class TeleopSession:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env", default="OdorLift", help="registered task name")
     parser.add_argument("--recipe", default="ripe_fruit")
-    parser.add_argument("--config-dir", default=CONFIG_DIR)
+    parser.add_argument("--scenario", default=DEFAULT_SCENARIO, help="GADEN scenario name or config-dir path")
     parser.add_argument("--device", default="keyboard", choices=["keyboard", "spacemouse"])
     parser.add_argument("--sample-hold-s", type=float, default=7.0)
     parser.add_argument("--out-dir", default="datasets/teleop")
     parser.add_argument("--no-bridge", action="store_true", help="drive arm only, no GADEN/ppm")
+    parser.add_argument(
+        "--odor-monitor",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="MODE",
+        help="live ppm log/plot: default log+plot; MODE=log or plot for one only",
+    )
     args = parser.parse_args(argv)
 
+    odor_monitor = False
+    if args.odor_monitor is not False:
+        odor_monitor = args.odor_monitor if args.odor_monitor is not True else True
+
     session = TeleopSession(
+        env=args.env,
         recipe=args.recipe,
-        config_dir=args.config_dir,
+        scenario=args.scenario,
         sample_hold_s=args.sample_hold_s,
         use_bridge=not args.no_bridge,
         out_dir=args.out_dir,
         has_renderer=True,
+        odor_monitor=odor_monitor,
     )
     try:
         session.run_interactive(device_name=args.device)
