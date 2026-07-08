@@ -23,7 +23,8 @@ ignored) so every sniff is a clean stationary dwell; those steps carry a
 Since Phase 4.5 the GADEN server is spawned automatically via ``odor_sim.make``,
 so a single command is enough (no separate server terminal)::
 
-    python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device keyboard --odor-monitor
+    python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --robots Panda \\
+        --camera agentview --device keyboard --odor-monitor
 """
 
 from __future__ import annotations
@@ -38,6 +39,15 @@ import numpy as np
 # enose tokens
 SAMPLE, IDLE, FILTER = 1, 0, -1
 DEFAULT_SCENARIO = "10x6_uniform"
+
+
+def _validate_robot(robots: str) -> str:
+    from robosuite.robots import ROBOT_CLASS_MAPPING
+
+    if robots not in ROBOT_CLASS_MAPPING:
+        available = ", ".join(sorted(ROBOT_CLASS_MAPPING.keys()))
+        raise ValueError(f"Unknown robot {robots!r}. Available robosuite robots: {available}")
+    return robots
 
 
 class EpisodeRecorder:
@@ -117,6 +127,16 @@ class TeleopSession:
         use_bridge: co-step GADEN and record ppm. If False, run arm-only
             (no server, ppm recorded as zeros) - to sanity-check driving alone.
         out_dir: dataset output directory.
+        robots: robosuite robot name (e.g. ``"Panda"``, ``"UR5e"``).
+        controller: robosuite composite controller name or config path; ``None``
+            uses the robot default.
+        render_camera: on-screen viewer camera (e.g. ``"agentview"``).
+        goal_update_mode: passed to the device ``input2action`` (``target`` or
+            ``achieved``).
+        pos_sensitivity: keyboard / SpaceMouse position scale.
+        rot_sensitivity: keyboard / SpaceMouse rotation scale.
+        success_hold_steps: consecutive successful control steps before auto-ending
+            an interactive episode (``0`` disables; default ``10`` like collect).
     """
 
     def __init__(
@@ -130,12 +150,34 @@ class TeleopSession:
         has_renderer: bool = False,
         control_freq: int = 20,
         odor_monitor=False,
+        robots: str = "Panda",
+        controller: str | None = None,
+        render_camera: str = "agentview",
+        goal_update_mode: str = "target",
+        pos_sensitivity: float = 1.0,
+        rot_sensitivity: float = 1.0,
+        success_hold_steps: int = 10,
     ):
         import odor_sim as odorsim
+        from robosuite.controllers import load_composite_controller_config
 
+        robots = _validate_robot(robots)
+        if goal_update_mode not in ("target", "achieved"):
+            raise ValueError(f"goal_update_mode must be 'target' or 'achieved', got {goal_update_mode!r}")
+        if success_hold_steps < 0:
+            raise ValueError(f"success_hold_steps must be >= 0, got {success_hold_steps}")
+
+        self.robots = robots
+        self.goal_update_mode = goal_update_mode
+        self.pos_sensitivity = pos_sensitivity
+        self.rot_sensitivity = rot_sensitivity
+        self.success_hold_steps = int(success_hold_steps)
         self.control_freq = control_freq
         self.sample_hold_steps = int(round(sample_hold_s * control_freq))
         self.out_dir = out_dir
+        self._vis_wrapped = False
+
+        controller_config = load_composite_controller_config(controller=controller, robot=robots)
 
         self.cosim = odorsim.make(
             env,
@@ -145,6 +187,11 @@ class TeleopSession:
             bridge=use_bridge,
             odor_monitor=odor_monitor if use_bridge else False,
             enose_site_offset=(0.0, 0.0, -0.02),
+            robots=robots,
+            controller_configs=controller_config,
+            render_camera=render_camera,
+            ignore_done=True,
+            reward_shaping=True,
             has_renderer=has_renderer,
             has_offscreen_renderer=False,
             use_camera_obs=False,
@@ -218,11 +265,32 @@ class TeleopSession:
     def _new_recorder(self, instruction: str) -> EpisodeRecorder:
         meta = {
             "recipe": getattr(self.env, "_recipe_name", "?"),
+            "robots": self.robots,
             "control_freq": self.control_freq,
             "sample_hold_steps": self.sample_hold_steps,
+            "success_hold_steps": self.success_hold_steps,
             "action_layout": "[robosuite_action..., enose_state]",
         }
         return EpisodeRecorder(self.out_dir, instruction, self.gas_types, meta)
+
+    def _update_success_hold(self, hold_count: int) -> tuple[int, bool]:
+        """Advance collect-style sustained-success counter.
+
+        Returns:
+            (new_count, should_break_episode)
+        """
+        if self.success_hold_steps <= 0:
+            return hold_count, False
+
+        if hold_count == 0:
+            return hold_count, True
+
+        if self.env._check_success():
+            if hold_count > 0:
+                return hold_count - 1, False
+            return self.success_hold_steps, False
+
+        return -1, False
 
     # ------------------------------------------------------------------ #
     # Headless scripted episode (for smoke testing without a human/device)
@@ -262,11 +330,17 @@ class TeleopSession:
         from copy import deepcopy
 
         from robosuite.controllers.composite.composite_controller import WholeBody
+        from robosuite.wrappers import VisualizationWrapper
+
+        if not self._vis_wrapped:
+            self.env = VisualizationWrapper(self.env)
+            self._vis_wrapped = True
 
         device, enose_keys = self._make_device(device_name)
         gripper_dof = self._gripper_dof()
 
         print(self._controls_help())
+        print(f"[teleop] robot={self.robots}")
         while True:
             instruction = self.env.instruction
             recorder = self._new_recorder(instruction)
@@ -277,6 +351,10 @@ class TeleopSession:
             device.start_control()
             self._hold_left = 0
             enose_keys.reset()
+            task_completion_hold_count = -1
+
+            for robot in self.env.robots:
+                robot.print_action_info_dict()
 
             active_robot = self.env.robots[0]
             prev_gripper = {
@@ -287,7 +365,7 @@ class TeleopSession:
 
             while True:
                 start = time.time()
-                input_ac = device.input2action()
+                input_ac = device.input2action(goal_update_mode=self.goal_update_mode)
                 if input_ac is None:  # device reset -> end episode
                     break
 
@@ -306,7 +384,19 @@ class TeleopSession:
                 enose_state = enose_keys.consume()
                 _, _, _, _, eff, samp = self.step(recorder, env_action, enose_state, gripper_dof)
                 self.env.render()
-                self._hud(instruction, eff, samp, len(recorder))
+                self._hud(
+                    instruction,
+                    eff,
+                    samp,
+                    len(recorder),
+                    success_hold_count=task_completion_hold_count,
+                )
+
+                task_completion_hold_count, end_on_success = self._update_success_hold(
+                    task_completion_hold_count
+                )
+                if end_on_success:
+                    break
 
                 if max_fr:
                     diff = 1.0 / max_fr - (time.time() - start)
@@ -325,12 +415,29 @@ class TeleopSession:
         if device_name == "keyboard":
             from robosuite.devices import Keyboard
 
-            device = Keyboard(env=self.env, pos_sensitivity=1.0, rot_sensitivity=1.0)
+            device = Keyboard(
+                env=self.env,
+                pos_sensitivity=self.pos_sensitivity,
+                rot_sensitivity=self.rot_sensitivity,
+            )
             enose_keys.attach_to_keyboard(device)
         elif device_name == "spacemouse":
-            from robosuite.devices import SpaceMouse
+            try:
+                from robosuite.devices import SpaceMouse
+            except ImportError as exc:
+                raise RuntimeError(
+                    "SpaceMouse is unavailable: the `hid` module is not installed or robosuite "
+                    "could not load the SpaceMouse driver. robosuite officially supports "
+                    "SpaceMouse on macOS only. On Linux install `pip install hidapi`, system "
+                    "libhidapi, and udev rules, and connect a 3Dconnexion device. "
+                    "Use --device keyboard instead."
+                ) from exc
 
-            device = SpaceMouse(env=self.env, pos_sensitivity=1.0, rot_sensitivity=1.0)
+            device = SpaceMouse(
+                env=self.env,
+                pos_sensitivity=self.pos_sensitivity,
+                rot_sensitivity=self.rot_sensitivity,
+            )
         else:
             raise ValueError(f"Unknown device {device_name!r}")
         return device, enose_keys
@@ -342,13 +449,17 @@ class TeleopSession:
             "  arm/gripper: standard robosuite keyboard controls\n"
             "  e-nose:  1 = sample (auto-hold ~7 s)   0 = idle   2 = filter/purge\n"
             "  end episode: the device reset key (Ctrl+Q on keyboard)\n"
+            "  sustained task success auto-ends the episode (collect-style)\n"
         )
 
     @staticmethod
-    def _hud(instruction, enose_state, sampling, step_i):
+    def _hud(instruction, enose_state, sampling, step_i, success_hold_count=-1):
         token = {SAMPLE: "SAMPLE", IDLE: "idle", FILTER: "FILTER"}.get(enose_state, "?")
         tag = " [SNIFF]" if sampling else ""
-        print(f"\r[{step_i:5d}] enose={token}{tag}  | {instruction}", end="", flush=True)
+        success_tag = ""
+        if success_hold_count > 0:
+            success_tag = f"  [SUCCESS {success_hold_count}]"
+        print(f"\r[{step_i:5d}] enose={token}{tag}{success_tag}  | {instruction}", end="", flush=True)
 
     @staticmethod
     def _ask_continue() -> bool:
@@ -365,7 +476,46 @@ def main(argv=None) -> int:
     parser.add_argument("--recipe", default="ripe_fruit")
     parser.add_argument("--scenario", default=DEFAULT_SCENARIO, help="GADEN scenario name or config-dir path")
     parser.add_argument("--device", default="keyboard", choices=["keyboard", "spacemouse"])
+    parser.add_argument(
+        "--robots",
+        default="Panda",
+        help="robosuite robot name (e.g. Panda, UR5e, Kinova3)",
+    )
+    parser.add_argument(
+        "--controller",
+        default=None,
+        help="robosuite composite controller name or config path (default: robot default)",
+    )
+    parser.add_argument(
+        "--camera",
+        default="agentview",
+        help="on-screen viewer camera name (render_camera)",
+    )
+    parser.add_argument(
+        "--pos-sensitivity",
+        type=float,
+        default=1.0,
+        help="keyboard / SpaceMouse position input scale",
+    )
+    parser.add_argument(
+        "--rot-sensitivity",
+        type=float,
+        default=1.0,
+        help="keyboard / SpaceMouse rotation input scale",
+    )
+    parser.add_argument(
+        "--goal-update-mode",
+        default="target",
+        choices=["target", "achieved"],
+        help="how the device updates arm goals (see collect_human_demonstrations)",
+    )
     parser.add_argument("--sample-hold-s", type=float, default=7.0)
+    parser.add_argument(
+        "--success-hold-steps",
+        type=int,
+        default=10,
+        help="consecutive successful steps before auto-ending episode (0=disable)",
+    )
     parser.add_argument("--out-dir", default="datasets/teleop")
     parser.add_argument("--no-bridge", action="store_true", help="drive arm only, no GADEN/ppm")
     parser.add_argument(
@@ -391,6 +541,13 @@ def main(argv=None) -> int:
         out_dir=args.out_dir,
         has_renderer=True,
         odor_monitor=odor_monitor,
+        robots=args.robots,
+        controller=args.controller,
+        render_camera=args.camera,
+        goal_update_mode=args.goal_update_mode,
+        pos_sensitivity=args.pos_sensitivity,
+        rot_sensitivity=args.rot_sensitivity,
+        success_hold_steps=args.success_hold_steps,
     )
     try:
         session.run_interactive(device_name=args.device)
