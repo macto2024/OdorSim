@@ -100,13 +100,20 @@ def main() -> int:
         check("ppm_columns", data["ppm"].shape[1] == len(session.gas_types), f"gas_types={session.gas_types}")
         check("ppm_recorded_nonzero", float(data["ppm"].max()) > 0.0, f"max ppm = {float(data['ppm'].max()):.3f}")
 
+        # sim_time must be monotonic (latched per step, no stale queued messages)
+        # and episode-relative (GADEN reset on episode start -> starts near 0).
+        st = data["sim_time"]
+        back = int(np.sum(np.diff(st) < 0))
+        check("sim_time_monotonic", bool(np.all(np.diff(st) >= 0)), f"backward jumps={back}")
+        check("sim_time_starts_near_zero", float(st[0]) <= 0.2, f"first sim_time={float(st[0]):.3f}")
+
         check("meta_instruction", bool(meta.get("instruction")), meta.get("instruction", ""))
         check("meta_gas_types", meta.get("gas_types") == session.gas_types, str(meta.get("gas_types")))
 
     finally:
         session.close()
 
-    total = 11
+    total = 13
     print(f"\n{total - failures}/{total} checks passed")
     return 1 if failures else 0
 

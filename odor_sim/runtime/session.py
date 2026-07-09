@@ -69,13 +69,16 @@ class OdorCosimSession:
         return self.bridge is not None
 
     def reset(self):
-        """Reset the robosuite env; publish initial source poses to GADEN.
+        """Reset the robosuite env; reset GADEN time and publish source poses.
 
         Returns the robosuite observation (with ``obs["instruction"]``).
         """
         obs = self.env.reset()
         if self.bridge is not None:
-            # Prime the server with the reset source layout (no time advance).
+            # Start a fresh GADEN episode (simTime -> 0, filaments cleared) so
+            # recorded sim_time is episode-relative, then prime the server with
+            # the reset source layout (no time advance).
+            self.bridge.reset_time()
             self.bridge.publish_source_poses(self.env.get_gaden_source_poses())
         if self.odor_monitor is not None:
             self.odor_monitor.reset()

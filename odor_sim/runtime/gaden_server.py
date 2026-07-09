@@ -95,6 +95,10 @@ class GadenServerManager:
         if not (self.scenario_path / "config.yaml").is_file():
             raise FileNotFoundError(f"No config.yaml in scenarioPath {self.scenario_path}")
 
+        # Drop any stale rt_server from a prior teleop/crash so ROS topics are
+        # not shared across multiple GADEN instances (causes sim_time zig-zag).
+        GadenServerManager.kill_all()
+
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.ros_log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.log_dir / f"rt_server_{self.scene_id}_{int(time.time())}.log"
@@ -180,6 +184,47 @@ class GadenServerManager:
                 self._proc.send_signal(sig)
             except ProcessLookupError:
                 pass
+
+    @staticmethod
+    def kill_all(timeout: float = 5.0) -> None:
+        """Terminate every running ``odor_gaden_rt`` ``rt_server`` process.
+
+        Used to clear stale servers left by a crashed or interrupted teleop
+        session before starting a new one, and again on teleop exit so only one
+        GADEN instance is ever active.
+        """
+        patterns = (
+            "/odor_gaden_rt/lib/odor_gaden_rt/rt_server",
+            "ros2 run odor_gaden_rt rt_server",
+        )
+        for pattern in patterns:
+            try:
+                subprocess.run(["pkill", "-TERM", "-f", pattern], check=False)
+            except OSError:
+                pass
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not GadenServerManager._any_running():
+                return
+            time.sleep(0.1)
+        for pattern in patterns:
+            try:
+                subprocess.run(["pkill", "-KILL", "-f", pattern], check=False)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _any_running() -> bool:
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", "/odor_gaden_rt/lib/odor_gaden_rt/rt_server"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return bool(out.stdout.strip())
+        except OSError:
+            return False
 
     # ------------------------------------------------------------------ #
     def __enter__(self) -> "GadenServerManager":

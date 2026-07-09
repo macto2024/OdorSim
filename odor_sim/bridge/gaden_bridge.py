@@ -72,10 +72,16 @@ class GadenBridge:
 
         self._source_pub = self.node.create_publisher(PoseArray, "/gaden/source_poses", 10)
         self._step_pub = self.node.create_publisher(Empty, "/gaden/step", 20)
+        self._reset_pub = self.node.create_publisher(Empty, "/gaden/reset", 5)
         self._odor_cli = self.node.create_client(GasPosition, "/odor_value")
         self._wind_cli = self.node.create_client(WindPosition, "/wind_value")
 
+        # ``_sim_time`` tracks the latest value seen on the topic; ``_sim_time_at_step``
+        # is the value latched when a ``step()`` last confirmed. The latch is what
+        # callers read, so a later ``query_ppm()`` spin cannot swap in a stale queued
+        # message (see step() / step_env()).
         self._sim_time = 0.0
+        self._sim_time_at_step = 0.0
         self._sim_time_msgs = 0
         self.node.create_subscription(Float32, "/gaden/sim_time", self._on_sim_time, 10)
 
@@ -118,6 +124,21 @@ class GadenBridge:
             rclpy.spin_once(self.node, timeout_sec=min(remaining, 0.05))
         return predicate()
 
+    def _drain_sim_time(self) -> None:
+        """Process every queued ``/gaden/sim_time`` message without blocking.
+
+        In lockstep the server publishes exactly one ``sim_time`` per ``/gaden/step``,
+        but a slow control loop (Phase 5a camera rendering) lets those messages pile
+        up in the subscription queue. Draining leaves ``_sim_time`` equal to the newest
+        published value, so the latch reflects the true current server time instead of
+        an old message replayed later during ``query_ppm()``.
+        """
+        while rclpy.ok():
+            before = self._sim_time_msgs
+            rclpy.spin_once(self.node, timeout_sec=0.0)
+            if self._sim_time_msgs == before:
+                break
+
     # ------------------------------------------------------------------ #
     # Source poses + stepping
     # ------------------------------------------------------------------ #
@@ -145,16 +166,42 @@ class GadenBridge:
 
         Returns True if ``/gaden/sim_time`` confirmed all ``n`` steps within
         ``step_timeout`` (or immediately if ``step_timeout`` is 0).
+
+        Each step drains any queued ``/gaden/sim_time`` messages *before*
+        publishing ``/gaden/step``, then waits for exactly one new message and
+        latches it immediately. Count-based sync without a pre-drain can
+        falsely confirm on a stale queued message from an earlier step.
         """
         confirmed = True
         for _ in range(n):
-            target = self._sim_time_msgs + 1
+            self._drain_sim_time()
+            baseline = self._sim_time_msgs
             self._step_pub.publish(Empty())
             if self.step_timeout > 0.0:
-                ok = self._spin_until(lambda t=target: self._sim_time_msgs >= t, self.step_timeout)
+                ok = self._spin_until(lambda b=baseline: self._sim_time_msgs > b, self.step_timeout)
                 confirmed = confirmed and ok
             else:
                 rclpy.spin_once(self.node, timeout_sec=0.0)
+            self._sim_time_at_step = self._sim_time
+        return confirmed
+
+    def reset_time(self, timeout: "float | None" = None) -> bool:
+        """Reset the GADEN server to a fresh episode (``simTime`` back to 0).
+
+        Publishes ``/gaden/reset``; the server rebuilds its scene (fresh filaments)
+        and republishes ``sim_time = 0``. Local time state is zeroed so the next
+        episode is logged on its own clock. Best-effort: if the running server
+        predates the reset topic (no subscriber), this returns False after a short
+        wait and local state is still zeroed.
+        """
+        wait = self.step_timeout if timeout is None else float(timeout)
+        self._drain_sim_time()
+        baseline = self._sim_time_msgs
+        self._reset_pub.publish(Empty())
+        confirmed = False
+        if wait > 0.0:
+            confirmed = self._spin_until(lambda b=baseline: self._sim_time_msgs > b, wait)
+        self._sim_time_at_step = self._sim_time
         return confirmed
 
     # ------------------------------------------------------------------ #
@@ -239,7 +286,9 @@ class GadenBridge:
 
         ppm = self.query_ppm(ee_pos_gaden)[0]
         return {
-            "sim_time": self._sim_time,
+            # latched at step confirmation; unchanged by advance=False since the
+            # server clock only moves on a step.
+            "sim_time": self._sim_time_at_step,
             "ee_pos_world": np.asarray(ee_pos_world, dtype=float),
             "ee_pos_gaden": np.asarray(ee_pos_gaden, dtype=float),
             "source_poses_gaden": np.asarray(source_poses, dtype=float),

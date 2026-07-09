@@ -1,4 +1,4 @@
-"""Interactive teleoperation + data-mining app (Phase 4b).
+"""Interactive teleoperation + data-mining app (Phase 4b / 5a).
 
 Drives an :class:`~odor_sim.envs.base.OdorManipulationEnv` with a robosuite
 device (keyboard / SpaceMouse) while co-stepping the GADEN plume through the
@@ -7,6 +7,9 @@ the robosuite action, the ternary ``enose_state`` token, an auto-hold/sampling
 mask, the ground-truth per-gas ppm at the EE, robot proprio, and the task
 instruction. Episodes are written to disk (raw ppm(t) is stored; voltage is
 synthesized offline in Phase 5).
+
+Phase 5a extends mining with camera frames (``agentview`` + wrist) and
+structured proprio (joint pos/vel, EE pose, gripper) per docs/SCHEMA.md.
 
 Two entry points:
 
@@ -40,6 +43,38 @@ import numpy as np
 SAMPLE, IDLE, FILTER = 1, 0, -1
 DEFAULT_SCENARIO = "10x6_uniform"
 
+# Mining camera set (Phase 5 decision): table overview + wrist, 256x256 RGB.
+MINING_CAMERAS = ("agentview", "robot0_eye_in_hand")
+# robosuite camera name -> on-disk frames/ subdir name (SCHEMA.md).
+_CAMERA_DIRNAMES = {"agentview": "agentview", "robot0_eye_in_hand": "wrist"}
+# Structured proprio: robosuite obs key -> SCHEMA.md episode.npz key.
+_PROPRIO_KEYS = {
+    "robot0_joint_pos": "joint_pos",
+    "robot0_joint_vel": "joint_vel",
+    "robot0_eef_pos": "eef_pos",
+    "robot0_eef_quat": "eef_quat",
+    "robot0_gripper_qpos": "gripper_qpos",
+}
+
+
+def _camera_dirname(camera: str) -> str:
+    return _CAMERA_DIRNAMES.get(camera, camera)
+
+
+def _save_png(path: "str | Path", image: np.ndarray) -> None:
+    from PIL import Image
+
+    Image.fromarray(np.ascontiguousarray(image)).save(str(path))
+
+
+def _controller_type(controller_config: dict) -> str:
+    """Human-readable arm controller type from a composite controller config."""
+    body_parts = controller_config.get("body_parts", {}) if controller_config else {}
+    arm = body_parts.get("right")
+    if not isinstance(arm, dict):
+        arm = next((v for v in body_parts.values() if isinstance(v, dict)), {})
+    return arm.get("type") or controller_config.get("type", "?")
+
 
 def _validate_robot(robots: str) -> str:
     from robosuite.robots import ROBOT_CLASS_MAPPING
@@ -55,56 +90,134 @@ class EpisodeRecorder:
 
     Stores raw ppm(t) (NOT voltage) + state/action/enose token/mask/instruction,
     matching the Phase 4b/5 "capture a superset, no voltage at mine time" rule.
+    Phase 5a adds structured proprio (joint pos/vel, EE pose, gripper) and, when
+    ``camera_map`` is given, per-step camera frames written as PNG sequences
+    under ``frames/<subdir>/`` (see docs/SCHEMA.md).
+
+    Args:
+        camera_map: ``{obs_image_key: frames_subdir}`` (e.g.
+            ``{"agentview_image": "agentview", "robot0_eye_in_hand_image": "wrist"}``).
+            Empty/None disables frame capture (headless path).
     """
 
-    def __init__(self, out_dir: "str | Path", instruction: str, gas_types: list, meta: dict):
+    def __init__(
+        self,
+        out_dir: "str | Path",
+        instruction: str,
+        gas_types: list,
+        meta: dict,
+        camera_map: "dict | None" = None,
+    ):
         self.out_dir = Path(out_dir)
         self.instruction = instruction
         self.gas_types = list(gas_types)
         self.meta = dict(meta)
+        self.camera_map = dict(camera_map or {})
         self._rows: list[dict] = []
+        self._image_size: "tuple | None" = None
+        self.ep_dir: "Path | None" = None
 
-    def add(self, *, sim_time, state, action, enose_state, sampling_active, ppm):
-        self._rows.append(
-            {
-                "sim_time": float(sim_time),
-                "state": np.asarray(state, dtype=np.float32),
-                "action": np.asarray(action, dtype=np.float32),
-                "enose_state": int(enose_state),
-                "sampling_active": bool(sampling_active),
-                "ppm": np.asarray([float(ppm.get(g, 0.0)) for g in self.gas_types], dtype=np.float32),
+    def _ensure_dir(self) -> Path:
+        """Create (once) the timestamped episode dir and any frame subdirs."""
+        if self.ep_dir is not None:
+            return self.ep_dir
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        ep_dir = self.out_dir / f"episode_{stamp}"
+        suffix = 1
+        while ep_dir.exists():
+            ep_dir = self.out_dir / f"episode_{stamp}_{suffix}"
+            suffix += 1
+        ep_dir.mkdir(parents=True)
+        for subdir in self.camera_map.values():
+            (ep_dir / "frames" / subdir).mkdir(parents=True, exist_ok=True)
+        self.ep_dir = ep_dir
+        return ep_dir
+
+    def add(
+        self,
+        *,
+        sim_time,
+        state,
+        action,
+        enose_state,
+        sampling_active,
+        ppm,
+        proprio: "dict | None" = None,
+        frames: "dict | None" = None,
+    ):
+        row = {
+            "sim_time": float(sim_time),
+            "state": np.asarray(state, dtype=np.float32),
+            "action": np.asarray(action, dtype=np.float32),
+            "enose_state": int(enose_state),
+            "sampling_active": bool(sampling_active),
+            "ppm": np.asarray([float(ppm.get(g, 0.0)) for g in self.gas_types], dtype=np.float32),
+        }
+        if proprio:
+            row["proprio"] = {
+                k: np.asarray(v, dtype=np.float32).ravel() for k, v in proprio.items()
             }
-        )
+        self._rows.append(row)
+
+        if frames and self.camera_map:
+            step_idx = len(self._rows) - 1
+            ep_dir = self._ensure_dir()
+            for obs_key, subdir in self.camera_map.items():
+                img = frames.get(obs_key)
+                if img is None:
+                    continue
+                img = np.asarray(img, dtype=np.uint8)
+                if self._image_size is None:
+                    self._image_size = (int(img.shape[0]), int(img.shape[1]))
+                _save_png(ep_dir / "frames" / subdir / f"{step_idx:06d}.png", img)
 
     def __len__(self) -> int:
         return len(self._rows)
+
+    def _stack_proprio(self) -> dict:
+        if not self._rows or "proprio" not in self._rows[0]:
+            return {}
+        keys = list(self._rows[0]["proprio"].keys())
+        out = {}
+        for key in keys:
+            if all("proprio" in r and key in r["proprio"] for r in self._rows):
+                out[key] = np.stack([r["proprio"][key] for r in self._rows])
+        return out
 
     def write(self, success: bool) -> "Path | None":
         if not self._rows:
             print("[teleop] empty episode; nothing written")
             return None
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        ep_dir = self.out_dir / f"episode_{stamp}"
-        ep_dir.mkdir(parents=True, exist_ok=True)
+        ep_dir = self._ensure_dir()
 
-        np.savez(
-            ep_dir / "episode.npz",
-            sim_time=np.array([r["sim_time"] for r in self._rows], dtype=np.float32),
-            state=np.stack([r["state"] for r in self._rows]),
-            action=np.stack([r["action"] for r in self._rows]),
-            enose_state=np.array([r["enose_state"] for r in self._rows], dtype=np.int8),
-            sampling_active=np.array([r["sampling_active"] for r in self._rows], dtype=bool),
-            ppm=np.stack([r["ppm"] for r in self._rows]),
-        )
+        arrays = {
+            "sim_time": np.array([r["sim_time"] for r in self._rows], dtype=np.float32),
+            "state": np.stack([r["state"] for r in self._rows]),
+            "action": np.stack([r["action"] for r in self._rows]),
+            "enose_state": np.array([r["enose_state"] for r in self._rows], dtype=np.int8),
+            "sampling_active": np.array([r["sampling_active"] for r in self._rows], dtype=bool),
+            "ppm": np.stack([r["ppm"] for r in self._rows]),
+        }
+        proprio = self._stack_proprio()
+        arrays.update(proprio)
+        np.savez(ep_dir / "episode.npz", **arrays)
+
         meta = {
             "instruction": self.instruction,
             "gas_types": self.gas_types,
             "num_steps": len(self._rows),
             "success": bool(success),
-            "note": "raw ppm(t) stored; voltage synthesized offline (Phase 4c/5)",
+            "note": "raw ppm(t) stored; voltage synthesized offline (Phase 5b)",
+            "proprio_keys": sorted(proprio.keys()),
             **self.meta,
         }
+        if self.camera_map:
+            meta["cameras"] = {
+                subdir: f"frames/{subdir}" for subdir in dict.fromkeys(self.camera_map.values())
+            }
+            if self._image_size is not None:
+                meta["image_size"] = list(self._image_size)
         with open(ep_dir / "meta.json", "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[teleop] wrote {len(self._rows)} steps -> {ep_dir} (success={success})")
@@ -112,32 +225,7 @@ class EpisodeRecorder:
 
 
 class TeleopSession:
-    """Owns the co-sim (env + bridge + server) and the per-step record logic.
-
-    The whole GADEN stack is brought up by :func:`odor_sim.make`, so there is no
-    separate server terminal: constructing a ``TeleopSession`` with
-    ``use_bridge=True`` exports the scene, spawns ``odor_gaden_rt`` in lockstep,
-    and connects the bridge.
-
-    Args:
-        env: registered task name (e.g. ``"OdorLift"``).
-        recipe: VOC recipe for the task object.
-        scenario: logical GADEN scenario name (or a config-dir path).
-        sample_hold_s: auto-hold duration on a ``sample`` press (seconds).
-        use_bridge: co-step GADEN and record ppm. If False, run arm-only
-            (no server, ppm recorded as zeros) - to sanity-check driving alone.
-        out_dir: dataset output directory.
-        robots: robosuite robot name (e.g. ``"Panda"``, ``"UR5e"``).
-        controller: robosuite composite controller name or config path; ``None``
-            uses the robot default.
-        render_camera: on-screen viewer camera (e.g. ``"agentview"``).
-        goal_update_mode: passed to the device ``input2action`` (``target`` or
-            ``achieved``).
-        pos_sensitivity: keyboard / SpaceMouse position scale.
-        rot_sensitivity: keyboard / SpaceMouse rotation scale.
-        success_hold_steps: consecutive successful control steps before auto-ending
-            an interactive episode (``0`` disables; default ``10`` like collect).
-    """
+    """Owns the co-sim (env + bridge + server) and the per-step record logic."""
 
     def __init__(
         self,
@@ -157,6 +245,9 @@ class TeleopSession:
         pos_sensitivity: float = 1.0,
         rot_sensitivity: float = 1.0,
         success_hold_steps: int = 10,
+        record_frames: bool = False,
+        camera_size: int = 256,
+        mining_cameras=MINING_CAMERAS,
     ):
         import odor_sim as odorsim
         from robosuite.controllers import load_composite_controller_config
@@ -176,8 +267,28 @@ class TeleopSession:
         self.sample_hold_steps = int(round(sample_hold_s * control_freq))
         self.out_dir = out_dir
         self._vis_wrapped = False
+        self.record_frames = bool(record_frames)
+        self.mining_cameras = list(mining_cameras)
+        self.camera_size = int(camera_size)
+        self.camera_map = (
+            {f"{c}_image": _camera_dirname(c) for c in self.mining_cameras}
+            if self.record_frames
+            else {}
+        )
 
         controller_config = load_composite_controller_config(controller=controller, robot=robots)
+        self.controller_type = _controller_type(controller_config)
+
+        if self.record_frames:
+            cam_kwargs = {
+                "has_offscreen_renderer": True,
+                "use_camera_obs": True,
+                "camera_names": self.mining_cameras,
+                "camera_heights": self.camera_size,
+                "camera_widths": self.camera_size,
+            }
+        else:
+            cam_kwargs = {"has_offscreen_renderer": False, "use_camera_obs": False}
 
         self.cosim = odorsim.make(
             env,
@@ -193,45 +304,62 @@ class TeleopSession:
             ignore_done=True,
             reward_shaping=True,
             has_renderer=has_renderer,
-            has_offscreen_renderer=False,
-            use_camera_obs=False,
             control_freq=control_freq,
             horizon=100000,
+            **cam_kwargs,
         )
         self.env = self.cosim.env
         self.bridge = self.cosim.bridge
+        self.scenario = scenario
+        self.scene_id = self.cosim.scene_id
 
-        # De-duplicate gas names (the server returns one ppm per *unique* gas),
-        # preserving source order.
         self.gas_types = list(
             dict.fromkeys(s.component.gaden_gas_name() for s in self.env.scene_builder.sources)
         )
-
-        # auto-hold state
         self._hold_left = 0
 
-    # ------------------------------------------------------------------ #
     def close(self):
         self.cosim.close()
 
     def _proprio_state(self, obs) -> np.ndarray:
-        keys = [k for k in obs if k.startswith("robot0_") and isinstance(obs[k], np.ndarray)]
+        keys = [
+            k
+            for k in obs
+            if k.startswith("robot0_")
+            and isinstance(obs[k], np.ndarray)
+            and obs[k].ndim == 1
+            and not k.endswith("image")
+            and not k.endswith("depth")
+        ]
         if not keys:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate([np.asarray(obs[k], dtype=np.float32).ravel() for k in sorted(keys)])
 
-    def _apply_hold(self, env_action: np.ndarray, enose_state: int, gripper_dof: int):
-        """Auto-hold: freeze the arm for the sample window on a sample press.
+    @staticmethod
+    def _structured_proprio(obs) -> dict:
+        out = {}
+        for obs_key, schema_key in _PROPRIO_KEYS.items():
+            val = obs.get(obs_key)
+            if isinstance(val, np.ndarray):
+                out[schema_key] = np.asarray(val, dtype=np.float32).ravel()
+        return out
 
-        Returns (env_action, effective_enose_state, sampling_active).
-        """
+    def _extract_frames(self, obs) -> dict:
+        frames = {}
+        for obs_key in self.camera_map:
+            img = obs.get(obs_key)
+            if isinstance(img, np.ndarray):
+                frames[obs_key] = np.asarray(img[::-1], dtype=np.uint8)
+        return frames
+
+    def _apply_hold(self, env_action: np.ndarray, enose_state: int, gripper_dof: int):
         if enose_state == SAMPLE and self._hold_left == 0:
             self._hold_left = self.sample_hold_steps
 
         if self._hold_left > 0:
             held = env_action.copy()
             if gripper_dof > 0:
-                held[:-gripper_dof] = 0.0  # zero arm delta, keep gripper command
+                held[:-gripper_dof] = 0.0
             else:
                 held[:] = 0.0
             self._hold_left -= 1
@@ -239,28 +367,47 @@ class TeleopSession:
         return env_action, enose_state, False
 
     def step(self, recorder: EpisodeRecorder, env_action: np.ndarray, enose_state: int, gripper_dof: int):
-        """One control step: auto-hold, publish+step GADEN, query ppm, record."""
         env_action, eff_enose, sampling = self._apply_hold(env_action, enose_state, gripper_dof)
 
+        # Match OdorCosimSession.step() order: advance physics first, then step
+        # GADEN and query ppm at the post-step EE pose.
+        obs, reward, done, info = self.env.step(env_action)
+
         if self.bridge is not None:
-            rec = self.bridge.step_env(self.env)  # publishes poses, ticks, queries EE ppm
+            rec = self.bridge.step_env(self.env)
             sim_time, ppm = rec["sim_time"], rec["ppm"]
             if self.cosim.odor_monitor is not None:
                 self.cosim.odor_monitor.record(sim_time, ppm)
         else:
             sim_time, ppm = 0.0, {}
 
-        obs, reward, done, info = self.env.step(env_action)
-        state = self._proprio_state(obs)
         recorder.add(
             sim_time=sim_time,
-            state=state,
-            action=np.concatenate([env_action, [eff_enose]]),  # action + enose dim
+            state=self._proprio_state(obs),
+            action=np.concatenate([env_action, [eff_enose]]),
             enose_state=eff_enose,
             sampling_active=sampling,
             ppm=ppm,
+            proprio=self._structured_proprio(obs),
+            frames=self._extract_frames(obs) if self.camera_map else None,
         )
         return obs, reward, done, info, eff_enose, sampling
+
+    def _reset_gaden(self) -> None:
+        """Start a fresh GADEN episode and prime it with the current source layout.
+
+        Called after ``env.reset()`` so each recorded episode's ``sim_time`` starts
+        near zero instead of accumulating GADEN server time across the session.
+        """
+        if self.bridge is None:
+            return
+        if not self.bridge.reset_time():
+            print(
+                "[teleop] warning: GADEN /gaden/reset did not confirm; "
+                "sim_time may carry over from prior episodes. "
+                "Rebuild odor_gaden_rt and restart teleop (no manual rt_server)."
+            )
+        self.bridge.publish_source_poses(self.env.get_gaden_source_poses())
 
     def _new_recorder(self, instruction: str) -> EpisodeRecorder:
         meta = {
@@ -270,42 +417,30 @@ class TeleopSession:
             "sample_hold_steps": self.sample_hold_steps,
             "success_hold_steps": self.success_hold_steps,
             "action_layout": "[robosuite_action..., enose_state]",
+            "controller_type": self.controller_type,
+            "scenario": self.scenario,
+            "scene_id": self.scene_id,
         }
-        return EpisodeRecorder(self.out_dir, instruction, self.gas_types, meta)
+        return EpisodeRecorder(
+            self.out_dir, instruction, self.gas_types, meta, camera_map=self.camera_map
+        )
 
     def _update_success_hold(self, hold_count: int) -> tuple[int, bool]:
-        """Advance collect-style sustained-success counter.
-
-        Returns:
-            (new_count, should_break_episode)
-        """
         if self.success_hold_steps <= 0:
             return hold_count, False
-
         if hold_count == 0:
             return hold_count, True
-
         if self.env._check_success():
             if hold_count > 0:
                 return hold_count - 1, False
             return self.success_hold_steps, False
-
         return -1, False
 
-    # ------------------------------------------------------------------ #
-    # Headless scripted episode (for smoke testing without a human/device)
-    # ------------------------------------------------------------------ #
     def run_scripted(self, arm_actions, enose_schedule, instruction: str = "", success: bool = True):
-        """Run a fixed schedule with no device; write the episode.
-
-        Args:
-            arm_actions: (T, action_dim) robosuite actions.
-            enose_schedule: length-T ternary enose tokens.
-            instruction: episode language label (defaults to env instruction).
-        """
         instruction = instruction or self.env.instruction
         recorder = self._new_recorder(instruction)
         self.env.reset()
+        self._reset_gaden()
         if self.cosim.odor_monitor is not None:
             self.cosim.odor_monitor.reset()
         gripper_dof = self._gripper_dof()
@@ -323,9 +458,6 @@ class TeleopSession:
         except Exception:  # noqa: BLE001
             return 1
 
-    # ------------------------------------------------------------------ #
-    # Interactive episode (device + on-screen viewer)
-    # ------------------------------------------------------------------ #
     def run_interactive(self, device_name: str = "keyboard", max_fr: int = 20):
         from copy import deepcopy
 
@@ -345,6 +477,7 @@ class TeleopSession:
             instruction = self.env.instruction
             recorder = self._new_recorder(instruction)
             self.env.reset()
+            self._reset_gaden()
             if self.cosim.odor_monitor is not None:
                 self.cosim.odor_monitor.reset()
             self.env.render()
@@ -366,7 +499,7 @@ class TeleopSession:
             while True:
                 start = time.time()
                 input_ac = device.input2action(goal_update_mode=self.goal_update_mode)
-                if input_ac is None:  # device reset -> end episode
+                if input_ac is None:
                     break
 
                 action_dict = deepcopy(input_ac)
@@ -427,10 +560,7 @@ class TeleopSession:
             except ImportError as exc:
                 raise RuntimeError(
                     "SpaceMouse is unavailable: the `hid` module is not installed or robosuite "
-                    "could not load the SpaceMouse driver. robosuite officially supports "
-                    "SpaceMouse on macOS only. On Linux install `pip install hidapi`, system "
-                    "libhidapi, and udev rules, and connect a 3Dconnexion device. "
-                    "Use --device keyboard instead."
+                    "could not load the SpaceMouse driver. Use --device keyboard instead."
                 ) from exc
 
             device = SpaceMouse(
@@ -517,6 +647,17 @@ def main(argv=None) -> int:
         help="consecutive successful steps before auto-ending episode (0=disable)",
     )
     parser.add_argument("--out-dir", default="datasets/teleop")
+    parser.add_argument(
+        "--no-frames",
+        action="store_true",
+        help=f"disable camera-frame mining (default records {', '.join(MINING_CAMERAS)})",
+    )
+    parser.add_argument(
+        "--camera-size",
+        type=int,
+        default=256,
+        help="mining camera frame height/width in px (default 256)",
+    )
     parser.add_argument("--no-bridge", action="store_true", help="drive arm only, no GADEN/ppm")
     parser.add_argument(
         "--odor-monitor",
@@ -548,11 +689,17 @@ def main(argv=None) -> int:
         pos_sensitivity=args.pos_sensitivity,
         rot_sensitivity=args.rot_sensitivity,
         success_hold_steps=args.success_hold_steps,
+        record_frames=not args.no_frames,
+        camera_size=args.camera_size,
     )
     try:
         session.run_interactive(device_name=args.device)
     finally:
         session.close()
+        # Ensure the GADEN server is gone even if close() missed it.
+        from odor_sim.runtime.gaden_server import GadenServerManager
+
+        GadenServerManager.kill_all()
     return 0
 
 

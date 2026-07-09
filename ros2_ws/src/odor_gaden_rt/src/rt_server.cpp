@@ -8,7 +8,8 @@
  *
  *   sub  /gaden/source_poses  geometry_msgs/PoseArray  pose i -> source i
  *   sub  /gaden/step          std_msgs/Empty           one AdvanceTimestep()
- *   pub  /gaden/sim_time      std_msgs/Float32         after every step
+ *   sub  /gaden/reset         std_msgs/Empty           rebuild scene, simTime=0
+ *   pub  /gaden/sim_time      std_msgs/Float32         after every step / reset
  *   srv  /odor_value          gaden_msgs/GasPosition   per-gas ppm at points
  *   srv  /wind_value          gaden_msgs/WindPosition  wind vector at points
  *
@@ -72,12 +73,13 @@ public:
                    desc.maxCoord.x, desc.maxCoord.y, desc.maxCoord.z);
 
         // ---- 3. build the live scene (one RunningSimulation per source) ----
-        gaden::RunningSceneMetadata sceneMeta = metadata.GetRunningScene(sceneID);
-        for (auto& params : sceneMeta.params)
+        // Keep the scene metadata around so /gaden/reset can rebuild a fresh scene.
+        sceneMeta = metadata.GetRunningScene(sceneID);
+        for (auto& params : sceneMeta->params)
             params.saveResults = false; // real-time only; never write results to disk
 
-        scene.emplace(sceneMeta, envConfig);
-        deltaTime = sceneMeta.params.at(0).deltaTime;
+        scene.emplace(*sceneMeta, envConfig);
+        deltaTime = sceneMeta->params.at(0).deltaTime;
 
         for (size_t i = 0; i < scene->GetSimulations().size(); i++)
         {
@@ -95,6 +97,10 @@ public:
         stepSub = create_subscription<std_msgs::msg::Empty>(
             "/gaden/step", 20,
             [this](std_msgs::msg::Empty::SharedPtr) { Step(); });
+
+        resetSub = create_subscription<std_msgs::msg::Empty>(
+            "/gaden/reset", 5,
+            [this](std_msgs::msg::Empty::SharedPtr) { Reset(); });
 
         simTimePub = create_publisher<std_msgs::msg::Float32>("/gaden/sim_time", 5);
 
@@ -163,6 +169,26 @@ private:
 
         if (publishMarkers)
             PublishMarkers();
+    }
+
+    // Start a fresh episode: rebuild the scene from the stored metadata (clears all
+    // filaments / dispersion state) and zero simTime, so each episode is logged on
+    // its own clock instead of accumulating across a long teleop session. Source
+    // positions revert to the config defaults; the bridge republishes the current
+    // layout immediately after reset.
+    void Reset()
+    {
+        scene.emplace(*sceneMeta, envConfig);
+        simTime = 0.0f;
+
+        std_msgs::msg::Float32 msg;
+        msg.data = simTime;
+        simTimePub->publish(msg);
+
+        if (publishMarkers)
+            PublishMarkers();
+
+        GADEN_INFO("Reset: simTime=0, scene rebuilt (fresh episode)");
     }
 
     void GasCallback(gaden_msgs::srv::GasPosition::Request::SharedPtr req,
@@ -243,6 +269,7 @@ private:
 private:
     std::shared_ptr<gaden::EnvironmentConfiguration> envConfig;
     std::optional<gaden::Scene> scene;
+    std::optional<gaden::RunningSceneMetadata> sceneMeta;
     float deltaTime = 0.05f;
     float simTime = 0.0f;
     bool stepOnTimer = false;
@@ -250,6 +277,7 @@ private:
 
     rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr sourcePosesSub;
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr stepSub;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr resetSub;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr simTimePub;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr filamentMarkerPub;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr sourceMarkerPub;
