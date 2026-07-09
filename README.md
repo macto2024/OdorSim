@@ -137,37 +137,6 @@ Available tasks:
 
 - `OdorLift`: Lift-style manipulation task. Spawns one or more catalog objects; you choose which one is the lift target (default: the first). Extra objects are odor-emitting distractors. Success is when the target rises ~4 cm above its resting height.
 
-### Object catalog and odor configuration
-
-Each catalog object is defined in **two files**:
-
-| File | What it holds |
-|------|----------------|
-| [`odor_sim/config/objects.yaml`](odor_sim/config/objects.yaml) | Geometry (box primitive or mesh XML path), which odor recipe to use, and optional placement rotation |
-| [`odor_sim/config/voc_recipes.yaml`](odor_sim/config/voc_recipes.yaml) | The actual VOC emission profile for each recipe (gases, strengths, optional local offsets) |
-
-[`odor_sim/config/objects.py`](odor_sim/config/objects.py) loads `objects.yaml` and resolves mesh paths. [`odor_sim/envs/odor_object.py`](odor_sim/envs/odor_object.py) turns each catalog name into a robosuite object plus an `OdorProfile` from the linked recipe. Only gases with `strength > 0` become GADEN sources; `strength: 0` gases still get a fixed column in the recorded ppm vector but cost no extra simulation. There is no per-task `recipe=` override — edit the object's `obj_<name>` entry in `voc_recipes.yaml` to change its smell.
-
-Built-in objects (geometry + odor):
-
-| Name | Geometry | Mesh / asset | Odor recipe | Active gases (`strength > 0`) |
-|------|----------|--------------|-------------|-------------------------------|
-| `odor_cube` | box (default task object) | — | `obj_odor_cube` | ethanol 0.8, acetone 0.4 |
-| `mango` | box (orange stand-in) | — | `obj_mango` | ethanol 0.8, propanol 0.2, acetone 0.4 |
-| `milk` | mesh XML | `odor_sim/assets/objects/milk/` | `obj_milk` | ethanol 0.15, methane 0.1, propanol 0.3, acetone 0.1 |
-| `porcelain_mug` | mesh XML | `odor_sim/assets/objects/porcelain_mug/` | `obj_porcelain_mug` | ethanol 0.2, propanol 0.6, acetone 0.9 |
-| `wine_bottle` | mesh XML | `odor_sim/assets/objects/wine_bottle/` | `obj_wine_bottle` | ethanol 1.0, propanol 0.1, acetone 0.2 |
-
-Every dedicated recipe declares the full MOX gas panel in fixed order: `ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone`. List names at runtime with `odorsim.list_objects()`. Mesh assets are vendored under `odor_sim/assets/objects/` (no LIBERO checkout needed). To add a new object: copy a self-contained robosuite XML folder there, add an `obj_<name>` recipe to `voc_recipes.yaml`, and add a catalog entry to `objects.yaml`.
-
-```python
-# One object — geometry + dedicated smell from catalog
-with odorsim.make("OdorLift", objects=["mango"]) as cosim:
-    ...
-
-# Two objects: mango is lift target (first), milk is odor distractor
-with odorsim.make("OdorLift", objects=["mango", "milk"]) as cosim:
-    ...
 
 # Pick the lift target explicitly (need not be first)
 with odorsim.make("OdorLift", objects=["milk", "mango"], target_object="mango") as cosim:
