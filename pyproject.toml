@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["ruff"]
 
 [tool.setuptools.packages.find]
 include = ["odor_sim*"]

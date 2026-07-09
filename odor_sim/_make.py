@@ -11,7 +11,7 @@ odor_gaden_rt`` -> connect bridge) behind a single entry point that returns an
         obs, reward, done, info = cosim.step(action)
         print(info["ppm"])   # ground-truth per-gas ppm at the EE
 
-Design rules (see docs/odorsim_make_unified_cosim.plan.md):
+Design rules:
 
   * The GADEN scene is exported from the **env's** ``scene_builder`` after the
     env is constructed, so the server's source *i* is the env's source *i*

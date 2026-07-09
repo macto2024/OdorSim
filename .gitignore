@@ -24,6 +24,14 @@ log/
 # --- Deprecated playground (kept locally for cherry-picking, not tracked) ---
 /simulation/
 
+# --- Local-only docs / setup notes / tests (kept on disk, not in git) ---
+/docs/
+/tests/
+/SETUP.md
+/VNC_SETUP.md
+/setup_gaden.sh
+/README_DEV.md
+
 # --- Python envs & packaging ---
 .venv/
 venv/

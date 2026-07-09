@@ -9,7 +9,7 @@ instruction. Episodes are written to disk (raw ppm(t) is stored; voltage is
 synthesized offline in Phase 5).
 
 Phase 5a extends mining with camera frames (``agentview`` + wrist) and
-structured proprio (joint pos/vel, EE pose, gripper) per docs/SCHEMA.md.
+structured proprio (joint pos/vel, EE pose, gripper).
 
 Two entry points:
 
@@ -45,9 +45,9 @@ DEFAULT_SCENARIO = "10x6_uniform"
 
 # Mining camera set (Phase 5 decision): table overview + wrist, 256x256 RGB.
 MINING_CAMERAS = ("agentview", "robot0_eye_in_hand")
-# robosuite camera name -> on-disk frames/ subdir name (SCHEMA.md).
+# robosuite camera name -> on-disk frames/ subdir name.
 _CAMERA_DIRNAMES = {"agentview": "agentview", "robot0_eye_in_hand": "wrist"}
-# Structured proprio: robosuite obs key -> SCHEMA.md episode.npz key.
+# Structured proprio: robosuite obs key -> episode.npz key.
 _PROPRIO_KEYS = {
     "robot0_joint_pos": "joint_pos",
     "robot0_joint_vel": "joint_vel",
@@ -92,7 +92,7 @@ class EpisodeRecorder:
     matching the Phase 4b/5 "capture a superset, no voltage at mine time" rule.
     Phase 5a adds structured proprio (joint pos/vel, EE pose, gripper) and, when
     ``camera_map`` is given, per-step camera frames written as PNG sequences
-    under ``frames/<subdir>/`` (see docs/SCHEMA.md).
+    under ``frames/<subdir>/``.
 
     Args:
         camera_map: ``{obs_image_key: frames_subdir}`` (e.g.

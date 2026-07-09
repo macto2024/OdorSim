@@ -1,11 +1,11 @@
 """Phase 5c: convert raw OdorSim episode dirs to a LeRobotDataset v3.0.
 
-Second stage of the two-stage pipeline (docs/SCHEMA.md): raw episodes on disk
+Second stage of the two-stage pipeline: raw episodes on disk
 (from teleop mining, Phase 5a) are mapped into a loadable LeRobot dataset via
 ``lerobot >= 0.6`` (``LeRobotDataset`` codebase version ``v3.0``: chunked
 parquet + MP4-encoded camera streams).
 
-Feature mapping (SCHEMA.md "LeRobot v3.0 mapping"):
+Feature mapping:
 
   * ``observation.images.<cam>``  <- ``frames/<cam>/*.png`` (agentview, wrist)
   * ``observation.state``         <- structured proprio, concatenated

@@ -1,7 +1,7 @@
 """Phase 5b: offline MOX/PID feature synthesis over raw episode dirs.
 
 Raw episodes store ground-truth ``ppm(t)`` at the EE (not voltage), per the
-Phase 5 "no voltage at mine time" rule (docs/SCHEMA.md). This module replays a
+Phase 5 "no voltage at mine time" rule. This module replays a
 recorded ppm(t) series through the shared sensor model
 (:mod:`odor_sim.sensors.mox_pid`) to derive:
 

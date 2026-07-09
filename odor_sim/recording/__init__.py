@@ -1,6 +1,6 @@
 """odor_sim.recording: Phase 5 dataset pipeline (synthesis + LeRobot export).
 
-Two-stage pipeline (docs/SCHEMA.md, docs/phase5_recording.plan.md):
+Two-stage pipeline:
 
   * :mod:`odor_sim.recording.synthesize` (5b) - offline MOX/PID feature
     synthesis over raw episode dirs (``features.npz`` + ``features_meta.json``).
