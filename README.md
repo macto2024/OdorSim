@@ -67,7 +67,7 @@ with odorsim.make("OdorLift", recipe="ripe_fruit", has_renderer=True, odor_monit
 OdorSim/
 ├── setup/                     # reproducible install scripts
 │   ├── install_ros_gaden.sh   #   ROS 2 + GADEN (clones & builds gaden/ in place)
-│   ├── install_sim_env.sh     #   Python venv: robosuite 1.5.2 + mujoco + lerobot
+│   ├── install_sim_env.sh     #   Python venv: robosuite 1.5.2 + mujoco
 │   ├── requirements-sim.txt   #   sim-side pip deps
 │   └── activate.sh            #   `source` this to enter the full environment
 ├── ros2_ws/src/               # OUR ROS 2 packages (overlay on gaden)
@@ -96,7 +96,7 @@ Ubuntu 24.04 + system Python 3.12. Run in order:
 # 1. ROS 2 Jazzy + GADEN (clones gaden/, builds it, then our overlay)
 bash setup/install_ros_gaden.sh
 
-# 2. robosuite/mujoco/lerobot venv (system-site-packages so rclpy is visible)
+# 2. robosuite/mujoco sim venv (system-site-packages so rclpy is visible)
 bash setup/install_sim_env.sh
 ```
 
@@ -207,6 +207,83 @@ python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device key
 ```
 
 See [VNC_SETUP.md](VNC_SETUP.md) for remote display setup on the VM.
+
+## Dataset recording (Phase 5)
+
+Two-stage pipeline: raw episodes on disk first, LeRobot conversion second.
+Collection and offline synthesis use the sim venv; LeRobot export uses a
+separate venv so its heavy deps do not fight robosuite/GADEN.
+
+### 5a — Collect raw episodes (sim venv)
+
+```bash
+source setup/activate.sh
+python -m odor_sim.bridge.teleop \
+    --env OdorLift --recipe ripe_fruit --device keyboard --odor-monitor
+```
+
+Each episode is written under `datasets/teleop/episode_<timestamp>/` as
+`episode.npz`, `meta.json`, and `frames/agentview/` + `frames/wrist/` PNGs.
+
+### 5b — Offline e-nose synthesis (sim venv)
+
+```bash
+source setup/activate.sh
+python -m odor_sim.recording.synthesize datasets/teleop
+```
+
+Writes `features.npz` + `features_meta.json` next to each episode (MOX voltage
+from the stored `ppm(t)` + `enose_state`; no re-mining needed).
+
+### 5c — LeRobot v3.0 export (separate venv)
+
+Create a one-off export env (no ROS / robosuite needed):
+
+```bash
+python3 -m venv .venv-lerobot
+source .venv-lerobot/bin/activate
+pip install -U pip wheel
+pip install -e .
+pip install "lerobot[dataset]>=0.6"
+```
+
+Convert one or more raw episodes:
+
+```bash
+python -m odor_sim.recording.convert \
+    --input datasets/teleop/episode_20260708_173353 \
+    --output odorsim/odorlift
+```
+
+Or convert every `episode_*/` under a parent dir:
+
+```bash
+python -m odor_sim.recording.convert \
+    --input datasets/teleop \
+    --output odorsim/odorlift
+```
+
+Expected output (paths vary):
+
+```
+[convert] episode_20260708_173353: 273 steps
+[convert] wrote 1 episode(s), 273 frames -> datasets/lerobot/odorsim/odorlift (repo_id=odorsim/odorlift, fps=20)
+```
+
+The dataset is written to `datasets/lerobot/odorsim/odorlift/` (chunked parquet +
+MP4 camera streams). Episodes without camera frames in `meta.json` are skipped.
+
+Load it back:
+
+```python
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+ds = LeRobotDataset(
+    repo_id="odorsim/odorlift",
+    root="datasets/lerobot/odorsim/odorlift",
+)
+print(ds.num_episodes, ds.num_frames, ds[0]["task"])
+```
 
 ## Status
 
