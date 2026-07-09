@@ -1,0 +1,31 @@
+The mesh object folders in this directory (milk/, porcelain_mug/,
+wine_bottle/) are vendored from the LIBERO benchmark
+(https://github.com/Lifelong-Robot-Learning/LIBERO), originally under
+libero/libero/assets/{stable_hope_objects,turbosquid_objects}. They are
+self-contained robosuite object XMLs (mesh + texture paths relative to each
+XML) and are redistributed here under LIBERO's MIT license, reproduced below,
+so OdorSim does not need a LIBERO checkout.
+
+----------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2023 Lifelong Robot Learning
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

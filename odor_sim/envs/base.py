@@ -22,7 +22,10 @@ from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.observables import Observable, sensor
-from robosuite.utils.placement_samplers import UniformRandomSampler
+from robosuite.utils.placement_samplers import (
+    SequentialCompositeSampler,
+    UniformRandomSampler,
+)
 from robosuite.utils.transform_utils import convert_quat
 
 from odor_sim.config.frame_map import FrameMap
@@ -101,11 +104,19 @@ class OdorManipulationEnv(ManipulationEnv):
         self.reward_shaping = reward_shaping
         self.use_object_obs = use_object_obs
         self.placement_initializer = placement_initializer
+        # Remember whether the sampler was user-supplied: an auto-built one is a
+        # SequentialCompositeSampler and must be rebuilt (not add_objects'd) on
+        # each _load_model / hard reset.
+        self._auto_placement = placement_initializer is None
 
         # populated in _load_model / _setup_references
         self.odor_objects: list[OdorObject] = []
         self.scene_builder: "SceneBuilder | None" = None
         self._odor_body_ids: dict[str, int] = {}
+        # Per-object resting body-z captured lazily after each reset, so lift
+        # success can be judged relative to where an object actually settles
+        # (mesh body origins sit at wildly different heights). Cleared on reset.
+        self._odor_rest_z: dict[str, float] = {}
 
         super().__init__(
             robots=robots,
@@ -167,28 +178,52 @@ class OdorManipulationEnv(ManipulationEnv):
         self.scene_builder = SceneBuilder(frame_map=self.frame_map)
         self.scene_builder.add_objects(self.odor_objects)
 
-        if self.placement_initializer is not None:
+        if self._auto_placement:
+            self.placement_initializer = self._build_placement_initializer()
+        else:
             self.placement_initializer.reset()
             self.placement_initializer.add_objects(self.odor_objects)
-        else:
-            self.placement_initializer = UniformRandomSampler(
-                name="OdorObjectSampler",
-                mujoco_objects=self.odor_objects,
-                x_range=[-0.05, 0.05],
-                y_range=[-0.05, 0.05],
-                rotation=None,
-                ensure_object_boundary_in_range=False,
-                ensure_valid_placement=True,
-                reference_pos=self.table_offset,
-                z_offset=0.01,
-                rng=self.rng,
-            )
 
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
             mujoco_objects=self.odor_objects,
         )
+
+    def _build_placement_initializer(self) -> SequentialCompositeSampler:
+        """One sub-sampler per object, honoring each object's rotation metadata.
+
+        Objects are spread along y so multiple objects do not start overlapping;
+        a single object keeps the historical centered jitter box. Each object's
+        ``rotation`` / ``rotation_axis`` (e.g. to stand a mesh upright) are
+        forwarded to its sub-sampler.
+        """
+        n = len(self.odor_objects)
+        if n == 1:
+            y_centers = [0.0]
+        else:
+            y_centers = list(np.linspace(-0.15, 0.15, n))
+
+        sampler = SequentialCompositeSampler(name="OdorObjectSampler")
+        for obj, y_center in zip(self.odor_objects, y_centers):
+            rotation = getattr(obj, "rotation", None)
+            rotation_axis = getattr(obj, "rotation_axis", "z") or "z"
+            sampler.append_sampler(
+                UniformRandomSampler(
+                    name=f"{obj.object_id}_sampler",
+                    mujoco_objects=obj,
+                    x_range=[-0.05, 0.05],
+                    y_range=[y_center - 0.05, y_center + 0.05],
+                    rotation=rotation,
+                    rotation_axis=rotation_axis,
+                    ensure_object_boundary_in_range=False,
+                    ensure_valid_placement=True,
+                    reference_pos=self.table_offset,
+                    z_offset=0.01,
+                    rng=self.rng,
+                )
+            )
+        return sampler
 
     def _setup_references(self):
         super()._setup_references()
@@ -200,6 +235,23 @@ class OdorManipulationEnv(ManipulationEnv):
     def object_to_sources(self) -> dict:
         """``object_id -> [gaden source indices]`` (feeds the Phase 4 bridge)."""
         return self.scene_builder.object_to_sources if self.scene_builder else {}
+
+    @property
+    def gas_types(self) -> list[str]:
+        """Fixed GADEN gas-name layout for the recorded ppm vector.
+
+        Union over *every* declared VOC of *every* object -- including inert
+        (strength-0) declarations -- so the ppm vector layout is stable
+        regardless of which gases actually emit a GADEN source. A gas with no
+        active source simply records 0.0.
+        """
+        names: list[str] = []
+        for obj in self.odor_objects:
+            for comp in obj.odor_profile:
+                name = comp.gaden_gas_name()
+                if name not in names:
+                    names.append(name)
+        return names
 
     # ------------------------------------------------------------------ #
     # Pose readouts (consumed by the Phase 4 bridge / recorder)
@@ -220,6 +272,21 @@ class OdorManipulationEnv(ManipulationEnv):
         grip_mat = np.array(self.sim.data.site_xmat[site_id]).reshape(3, 3)
         sensor_pos = grip_pos + grip_mat @ self.enose_site_offset
         return sensor_pos, grip_mat
+
+    def object_body_z(self, object_id: str) -> float:
+        """Current world-frame z of an odor object's body origin."""
+        return float(self.sim.data.body_xpos[self._odor_body_ids[object_id]][2])
+
+    def object_rest_z(self, object_id: str) -> float:
+        """Resting body-z of an object, captured (once) after the last reset.
+
+        Lets tasks judge "lifted" relative to where each object actually
+        settles rather than a single absolute threshold that only fit the
+        historical cube (mesh body origins vary a lot).
+        """
+        if object_id not in self._odor_rest_z:
+            self._odor_rest_z[object_id] = self.object_body_z(object_id)
+        return self._odor_rest_z[object_id]
 
     def get_object_world_poses(self) -> dict:
         """``object_id -> (pos (3,), rot_mat (3, 3))`` for all odor objects."""
@@ -295,6 +362,8 @@ class OdorManipulationEnv(ManipulationEnv):
     # ------------------------------------------------------------------ #
     def _reset_internal(self):
         super()._reset_internal()
+        # Force a fresh resting-height snapshot on the next success check.
+        self._odor_rest_z = {}
         if not self.deterministic_reset:
             object_placements = self.placement_initializer.sample()
             for obj_pos, obj_quat, obj in object_placements.values():

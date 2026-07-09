@@ -6,7 +6,7 @@ odor_gaden_rt`` -> connect bridge) behind a single entry point that returns an
 
     import odor_sim as odorsim
 
-    with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
+    with odorsim.make("OdorLift", objects=["mango"]) as cosim:
         obs = cosim.reset()
         obs, reward, done, info = cosim.step(action)
         print(info["ppm"])   # ground-truth per-gas ppm at the EE
@@ -44,7 +44,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _gas_types_from_env(env) -> list[str]:
-    """Unique GADEN gas names in source order (matches bridge / teleop)."""
+    """Fixed GADEN gas-name layout for the env (full profiles, incl. inert)."""
+    gas_types = getattr(env, "gas_types", None)
+    if gas_types is not None:
+        return list(gas_types)
     sb = getattr(env, "scene_builder", None)
     if sb is None:
         return []
@@ -61,8 +64,12 @@ def _build_odor_monitor(spec, gas_types: list[str]):
     return OdorMonitor(gas_types, **opts)
 
 
-def _default_scene_id(env: str, recipe: "str | None") -> str:
-    raw = f"{env}_{recipe}" if recipe else env
+def _default_scene_id(env: str, objects=None) -> str:
+    parts = [env]
+    if objects:
+        names = [objects] if isinstance(objects, str) else list(objects)
+        parts.extend(str(n) for n in names)
+    raw = "_".join(parts)
     return re.sub(r"[^0-9A-Za-z_]+", "_", raw).strip("_").lower()
 
 
@@ -93,7 +100,6 @@ def _ensure_writable_ros_log_dir() -> None:
 def make(
     env: str,
     *,
-    recipe: "str | None" = None,
     scenario: str = "10x6_uniform",
     scenario_config: str = "config1",
     scene_id: "str | None" = None,
@@ -113,13 +119,12 @@ def make(
     Args:
         env: registered task name (e.g. ``"OdorLift"``; see
             :func:`odor_sim.envs.registry.list_tasks`).
-        recipe: VOC recipe name; defaults to the task's ``default_recipe``.
         scenario: logical scenario name under ``scenarios/`` or a direct path to
             a GADEN environment configuration directory.
         scenario_config: which ``environment_configurations/<name>`` to use when
             ``scenario`` is a logical name.
-        scene_id: scene file name to export/load; defaults to
-            ``f"{env}_{recipe}"`` (lowercased).
+        scene_id: scene file name to export/load; defaults to the env name plus
+            the object names (lowercased). Objects carry their own recipes.
         auto_start_gaden: spawn the ``odor_gaden_rt`` server subprocess. If
             False, only the env is built and the scene is exported (dry run;
             no ROS) — this is the Phase 4.5a path.
@@ -144,14 +149,12 @@ def make(
         An :class:`OdorCosimSession`. Use it as a context manager so the server
         and env are always torn down.
     """
-    spec = get_task_spec(env)
-    effective_recipe = recipe if recipe is not None else spec.get("default_recipe")
+    get_task_spec(env)  # validate task name early
     config_dir = resolve_scenario(scenario, scenario_config)
-    scene_id = scene_id or _default_scene_id(env, effective_recipe)
+    scene_id = scene_id or _default_scene_id(env, env_kwargs.get("objects"))
 
     inner_env = make_env(
         env,
-        recipe=effective_recipe,
         scenario_config_dir=config_dir,
         **env_kwargs,
     )

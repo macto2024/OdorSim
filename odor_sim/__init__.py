@@ -11,7 +11,7 @@ Subpackages (populated across build phases):
 Unified co-simulation facade (Phase 4.5)::
 
     import odor_sim as odorsim
-    with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
+    with odorsim.make("OdorLift", objects=["mango"]) as cosim:
         obs = cosim.reset()
         obs, reward, done, info = cosim.step(action)   # info["ppm"] at the EE
 
@@ -21,7 +21,7 @@ Unified co-simulation facade (Phase 4.5)::
 
 __version__ = "0.0.1"
 
-__all__ = ["make", "OdorCosimSession"]
+__all__ = ["make", "OdorCosimSession", "list_objects", "list_recipes", "list_tasks"]
 
 
 def __getattr__(name):
@@ -33,4 +33,16 @@ def __getattr__(name):
         from odor_sim.runtime.session import OdorCosimSession
 
         return OdorCosimSession
+    if name == "list_objects":
+        from odor_sim.config.objects import list_objects
+
+        return list_objects
+    if name == "list_recipes":
+        from odor_sim.config.recipes import list_recipes
+
+        return list_recipes
+    if name == "list_tasks":
+        from odor_sim.envs.registry import list_tasks
+
+        return list_tasks
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

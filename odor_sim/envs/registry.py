@@ -27,11 +27,11 @@ def _odor_lift():
 
 # string -> {factory, defaults}. ``cls`` is a zero-arg callable returning the
 # env class (lazy import); ``defaults`` are merged under explicit make() kwargs.
+# Objects carry their own dedicated recipes, so there is no default_recipe.
 REGISTERED_TASKS: dict[str, dict] = {
     "OdorLift": {
         "cls": _odor_lift,
-        "default_recipe": "ripe_fruit",
-        "default_instruction": None,  # env generates one from the recipe
+        "default_instruction": None,  # env generates one from the object name
     },
 }
 
@@ -73,7 +73,6 @@ def resolve_scenario(scenario: str, config: str = "config1") -> Path:
 def make_env(
     env: str,
     *,
-    recipe: str | None = None,
     scenario_config_dir: "str | Path | None" = None,
     instruction: str | None = None,
     **env_kwargs,
@@ -82,12 +81,12 @@ def make_env(
 
     Args:
         env: registered task name (see :func:`list_tasks`).
-        recipe: VOC recipe; falls back to the task's ``default_recipe``.
         scenario_config_dir: GADEN config dir passed through to the env (drives
             its :class:`~odor_sim.config.frame_map.FrameMap`).
         instruction: task language label; falls back to the task default (which
             may be ``None``, letting the env generate one).
-        **env_kwargs: forwarded verbatim to the env constructor.
+        **env_kwargs: forwarded verbatim to the env constructor (e.g.
+            ``objects``).
 
     Returns:
         A constructed :class:`~odor_sim.envs.base.OdorManipulationEnv` subclass.
@@ -95,12 +94,9 @@ def make_env(
     spec = get_task_spec(env)
     cls = spec["cls"]()
 
-    recipe = recipe if recipe is not None else spec.get("default_recipe")
     instruction = instruction if instruction is not None else spec.get("default_instruction")
 
     kwargs = dict(env_kwargs)
-    if recipe is not None:
-        kwargs.setdefault("recipe", recipe)
     if instruction is not None:
         kwargs.setdefault("instruction", instruction)
     if scenario_config_dir is not None:

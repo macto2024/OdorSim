@@ -43,7 +43,7 @@ source setup/activate.sh
 python - <<'EOF'
 import odor_sim as odorsim
 
-with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
+with odorsim.make("OdorLift", objects=["mango"]) as cosim:
     obs = cosim.reset()
     print(obs["instruction"])
     for _ in range(500):
@@ -52,7 +52,7 @@ with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
 EOF
 
 # 2. Collect raw demonstrations
-python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device keyboard --odor-monitor
+python -m odor_sim.bridge.teleop --env OdorLift --objects milk --device keyboard --odor-monitor
 ```
 
 Teleop records **ground-truth ppm** at the end effector plus your **e-nose mode** each step. It does **not** write voltage yet — that comes from synthesis (step 3).
@@ -126,7 +126,7 @@ Recommended Python entry point:
 ```python
 import odor_sim as odorsim
 
-with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
+with odorsim.make("OdorLift", objects=["mango"]) as cosim:
     obs = cosim.reset()
     action = cosim.zero_action()
     obs, reward, done, info = cosim.step(action)
@@ -135,23 +135,49 @@ with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
 
 Available tasks:
 
-- `OdorLift`: Lift-style manipulation task with an odor-emitting cube.
+- `OdorLift`: Lift-style manipulation task. Spawns one or more catalog objects; you choose which one is the lift target (default: the first). Extra objects are odor-emitting distractors. Success is when the target rises ~4 cm above its resting height.
 
-Available recipes (defined in `odor_sim/config/voc_recipes.yaml`):
+### Object catalog and odor configuration
 
-- `ripe_fruit`
-- `overripe_fruit`
-- `ethanol_strong`
-- `ethanol_weak`
-- `acetone_strong`
-- `faint_alcohol`
-- `solvent_leak`
+Each catalog object is defined in **two files**:
 
-Add or edit recipes in that file; each recipe is a list of VOC components (gas type + strength) that become GADEN odor sources.
+| File | What it holds |
+|------|----------------|
+| [`odor_sim/config/objects.yaml`](odor_sim/config/objects.yaml) | Geometry (box primitive or mesh XML path), which odor recipe to use, and optional placement rotation |
+| [`odor_sim/config/voc_recipes.yaml`](odor_sim/config/voc_recipes.yaml) | The actual VOC emission profile for each recipe (gases, strengths, optional local offsets) |
+
+[`odor_sim/config/objects.py`](odor_sim/config/objects.py) loads `objects.yaml` and resolves mesh paths. [`odor_sim/envs/odor_object.py`](odor_sim/envs/odor_object.py) turns each catalog name into a robosuite object plus an `OdorProfile` from the linked recipe. Only gases with `strength > 0` become GADEN sources; `strength: 0` gases still get a fixed column in the recorded ppm vector but cost no extra simulation. There is no per-task `recipe=` override — edit the object's `obj_<name>` entry in `voc_recipes.yaml` to change its smell.
+
+Built-in objects (geometry + odor):
+
+| Name | Geometry | Mesh / asset | Odor recipe | Active gases (`strength > 0`) |
+|------|----------|--------------|-------------|-------------------------------|
+| `odor_cube` | box (default task object) | — | `obj_odor_cube` | ethanol 0.8, acetone 0.4 |
+| `mango` | box (orange stand-in) | — | `obj_mango` | ethanol 0.8, propanol 0.2, acetone 0.4 |
+| `milk` | mesh XML | `odor_sim/assets/objects/milk/` | `obj_milk` | ethanol 0.15, methane 0.1, propanol 0.3, acetone 0.1 |
+| `porcelain_mug` | mesh XML | `odor_sim/assets/objects/porcelain_mug/` | `obj_porcelain_mug` | ethanol 0.2, propanol 0.6, acetone 0.9 |
+| `wine_bottle` | mesh XML | `odor_sim/assets/objects/wine_bottle/` | `obj_wine_bottle` | ethanol 1.0, propanol 0.1, acetone 0.2 |
+
+Every dedicated recipe declares the full MOX gas panel in fixed order: `ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone`. List names at runtime with `odorsim.list_objects()`. Mesh assets are vendored under `odor_sim/assets/objects/` (no LIBERO checkout needed). To add a new object: copy a self-contained robosuite XML folder there, add an `obj_<name>` recipe to `voc_recipes.yaml`, and add a catalog entry to `objects.yaml`.
+
+```python
+# One object — geometry + dedicated smell from catalog
+with odorsim.make("OdorLift", objects=["mango"]) as cosim:
+    ...
+
+# Two objects: mango is lift target (first), milk is odor distractor
+with odorsim.make("OdorLift", objects=["mango", "milk"]) as cosim:
+    ...
+
+# Pick the lift target explicitly (need not be first)
+with odorsim.make("OdorLift", objects=["milk", "mango"], target_object="mango") as cosim:
+    ...
+```
 
 Useful `odor_sim.make(...)` options:
 
-- `recipe="ripe_fruit"`: choose the VOC recipe.
+- `objects=["mango"]`: choose catalog object(s) to spawn.
+- `target_object="mango"`: which spawned object is the lift target (default: first in `objects`).
 - `scenario="10x6_uniform"`: choose a scenario under `scenarios/`, or pass a direct config directory.
 - `scenario_config="config1"`: choose the config under `environment_configurations/`.
 - `scene_id=None`: override the generated scene name.
@@ -169,43 +195,87 @@ Useful `odor_sim.make(...)` options:
 For a dry run that builds the env and exports the scene without ROS:
 
 ```python
-with odorsim.make("OdorLift", recipe="ripe_fruit", auto_start_gaden=False) as cosim:
+with odorsim.make("OdorLift", objects=["mango"], auto_start_gaden=False) as cosim:
     print(cosim.scene_path)
 ```
 
 To connect to a manually started server:
 
 ```python
-with odorsim.make("OdorLift", recipe="ripe_fruit", connect_only=True, scene_id="rt_scene") as cosim:
+with odorsim.make("OdorLift", objects=["mango"], connect_only=True, scene_id="rt_scene") as cosim:
     obs = cosim.reset()
 ```
 
 ## Teleoperate And Record Data
 
-Teleop starts the task, starts GADEN, records actions, records ppm, and writes one folder per episode under `datasets/teleop/`.
+Teleop drives an `OdorLift` (or other registered task) with a robosuite device while co-stepping the GADEN plume. Each control step records the arm action, e-nose mode, ground-truth ppm at the end effector, proprio, and the task instruction. Episodes are written as one folder per run under `datasets/teleop/`.
+
+### OdorLift teleop
+
+`OdorLift` spawns catalog objects on the table and asks you to **lift the target object** off the surface. The on-screen HUD shows the instruction (e.g. `pick up the mango`). Lifting a distractor does not count — only the target object's height is checked for success (~4 cm above its resting pose). After `--success-hold-steps` consecutive successful steps (default 10), the episode auto-ends.
+
+**Single object** (default target is the only object):
 
 ```bash
 source setup/activate.sh
 
 python -m odor_sim.bridge.teleop \
   --env OdorLift \
-  --recipe ripe_fruit \
+  --objects milk \
   --device keyboard \
+  --odor-monitor \
   --out-dir datasets/teleop
 ```
 
-E-nose controls during teleop (sniffing mode):
+**Multiple objects** — first spawned object is the lift target by default; extras are odor distractors with their own recipes from `voc_recipes.yaml`:
 
-- `1`: sample / sniff. Opens the valve and auto-holds the arm for the sample window (~7 s by default).
-- `0`: idle. Valve closed; sensor purges toward baseline on clean air.
-- `2`: filter / purge. Same purge behavior as idle.
+```bash
+python -m odor_sim.bridge.teleop \
+  --env OdorLift \
+  --objects mango milk \
+  --device keyboard \
+  --odor-monitor
+```
 
-Continuous mode needs no keys — ppm is always recorded, and synthesis builds the always-on voltage stream from that. Sniffing mode only sees the plume while you hold `1`; synthesis uses the recorded `enose_state` timeline to build the gated voltage stream.
+**Explicit lift target** — spawn several objects but reward lifting a specific one (need not be first):
+
+```bash
+python -m odor_sim.bridge.teleop \
+  --env OdorLift \
+  --objects milk mango \
+  --target-object mango \
+  --device keyboard \
+  --odor-monitor
+```
+
+**Controls during teleop:**
+
+| Input | Action |
+|-------|--------|
+| robosuite keyboard / SpaceMouse | move arm and gripper (standard robosuite device controls) |
+| `1` | e-nose **sample / sniff** — opens valve, auto-holds arm ~7 s (`--sample-hold-s`) |
+| `0` | e-nose **idle** — valve closed, sensor purges toward baseline |
+| `2` | e-nose **filter / purge** — same purge behavior as idle |
+| device reset key (`Ctrl+Q` on keyboard) | end episode manually |
+
+Continuous odor mode needs no e-nose keys — ppm is always recorded. Sniffing mode only exposes the sensor to the plume while you hold `1`; synthesis uses the recorded `enose_state` timeline to build the gated voltage stream.
+
+**What gets recorded** (`datasets/teleop/episode_YYYYMMDD_HHMMSS/`):
+
+```text
+episode.npz          # actions, states, ppm(t), enose_state, proprio
+meta.json            # instruction, objects, target_object, gas_types, success, ...
+frames/agentview/    # camera PNGs (unless --no-frames)
+frames/wrist/
+```
+
+`meta.json` includes the catalog `objects` list, the resolved `target_object` name, the natural-language `instruction`, and whether the episode ended in task `success`. Voltage features are **not** written at teleop time — run synthesis afterward (see below).
 
 Important teleop options:
 
 - `--env`: task name, default `OdorLift`.
-- `--recipe`: VOC recipe, default `ripe_fruit`.
+- `--objects`: catalog object name(s) to spawn; default is the task's own default object (`odor_cube`).
+- `--target-object`: which spawned object is the lift target (must be one of `--objects`); default is the first object.
 - `--scenario`: scenario name or config directory, default `10x6_uniform`.
 - `--device`: `keyboard` or `spacemouse`, default `keyboard`.
 - `--robots`: robosuite robot name, default `Panda`.
@@ -221,16 +291,6 @@ Important teleop options:
 - `--camera-size`: recorded frame size, default `256`.
 - `--no-bridge`: drive robosuite only, without GADEN / ppm.
 - `--odor-monitor [MODE]`: live ppm monitor. Use no value for log + plot, or `log` / `plot`.
-
-Raw episode output looks like:
-
-```text
-datasets/teleop/episode_YYYYMMDD_HHMMSS/
-  episode.npz
-  meta.json
-  frames/agentview/*.png
-  frames/wrist/*.png
-```
 
 ## Convert Data To LeRobot
 

@@ -70,11 +70,18 @@ class SceneBuilder:
         self._objects: dict[str, OdorObject] = {}
 
     def add_object(self, obj: OdorObject) -> list[int]:
-        """Register an OdorObject; returns the source indices it occupies."""
+        """Register an OdorObject; returns the source indices it occupies.
+
+        Only *active* VOCs (strength > 0) become GADEN sources. The original
+        position within the object's profile is preserved as ``voc_index`` so
+        inert (strength-0) declarations do not shift the mapping.
+        """
         if obj.object_id in self._object_to_sources:
             raise ValueError(f"Object {obj.object_id!r} already added")
         indices: list[int] = []
         for voc_index, comp in enumerate(obj.odor_profile):
+            if not comp.is_active:
+                continue
             idx = len(self._sources)
             self._sources.append(
                 SourceEntry(index=idx, object_id=obj.object_id, voc_index=voc_index, component=comp)

@@ -26,7 +26,7 @@ ignored) so every sniff is a clean stationary dwell; those steps carry a
 Since Phase 4.5 the GADEN server is spawned automatically via ``odor_sim.make``,
 so a single command is enough (no separate server terminal)::
 
-    python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --robots Panda \\
+    python -m odor_sim.bridge.teleop --env OdorLift --objects milk --robots Panda \\
         --camera agentview --device keyboard --odor-monitor
 """
 
@@ -230,7 +230,8 @@ class TeleopSession:
     def __init__(
         self,
         env: str = "OdorLift",
-        recipe: str = "ripe_fruit",
+        objects=None,
+        target_object: str | None = None,
         scenario: str = DEFAULT_SCENARIO,
         sample_hold_s: float = 7.0,
         use_bridge: bool = True,
@@ -290,9 +291,14 @@ class TeleopSession:
         else:
             cam_kwargs = {"has_offscreen_renderer": False, "use_camera_obs": False}
 
+        # Only forward ``objects``/``target_object`` when set, so non-catalog
+        # envs are unaffected.
+        object_kwargs = {"objects": list(objects)} if objects else {}
+        if target_object:
+            object_kwargs["target_object"] = target_object
+
         self.cosim = odorsim.make(
             env,
-            recipe=recipe,
             scenario=scenario,
             auto_start_gaden=use_bridge,
             bridge=use_bridge,
@@ -306,6 +312,7 @@ class TeleopSession:
             has_renderer=has_renderer,
             control_freq=control_freq,
             horizon=100000,
+            **object_kwargs,
             **cam_kwargs,
         )
         self.env = self.cosim.env
@@ -313,9 +320,9 @@ class TeleopSession:
         self.scenario = scenario
         self.scene_id = self.cosim.scene_id
 
-        self.gas_types = list(
-            dict.fromkeys(s.component.gaden_gas_name() for s in self.env.scene_builder.sources)
-        )
+        # Fixed gas-vector layout from the objects' full profiles (incl. inert
+        # strength-0 gases), so recorded ppm has the same columns every run.
+        self.gas_types = list(self.env.gas_types)
         self._hold_left = 0
 
     def close(self):
@@ -411,7 +418,8 @@ class TeleopSession:
 
     def _new_recorder(self, instruction: str) -> EpisodeRecorder:
         meta = {
-            "recipe": getattr(self.env, "_recipe_name", "?"),
+            "objects": getattr(self.env, "object_names", None),
+            "target_object": getattr(self.env, "target_object_name", None),
             "robots": self.robots,
             "control_freq": self.control_freq,
             "sample_hold_steps": self.sample_hold_steps,
@@ -603,7 +611,26 @@ class TeleopSession:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", default="OdorLift", help="registered task name")
-    parser.add_argument("--recipe", default="ripe_fruit")
+    parser.add_argument(
+        "--objects",
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help=(
+            "catalog object name(s) to spawn (see odor_sim/config/objects.yaml); "
+            "first is the lift target unless --target-object is given, extras "
+            "are odor distractors. Default: the task's own default object."
+        ),
+    )
+    parser.add_argument(
+        "--target-object",
+        default=None,
+        metavar="NAME",
+        help=(
+            "which spawned object is the lift target (must be one of --objects); "
+            "default: the first object."
+        ),
+    )
     parser.add_argument("--scenario", default=DEFAULT_SCENARIO, help="GADEN scenario name or config-dir path")
     parser.add_argument("--device", default="keyboard", choices=["keyboard", "spacemouse"])
     parser.add_argument(
@@ -675,7 +702,8 @@ def main(argv=None) -> int:
 
     session = TeleopSession(
         env=args.env,
-        recipe=args.recipe,
+        objects=args.objects,
+        target_object=args.target_object,
         scenario=args.scenario,
         sample_hold_s=args.sample_hold_s,
         use_bridge=not args.no_bridge,

@@ -1,10 +1,15 @@
 """OdorProfile: the multi-VOC odor description attached to an object.
 
-An object emits a *mixture* of volatile organic compounds (VOCs). Each VOC
-component becomes one live GADEN source, co-located at the object's position
-(plus an optional per-VOC local offset). ``strength`` is an abstract 0..1 knob
-that maps to GADEN emission parameters (``filamentPPMcenter`` and
-``numFilaments_sec``).
+An object emits a *mixture* of volatile organic compounds (VOCs). Each *active*
+VOC component (``strength > 0``) becomes one live GADEN source, co-located at
+the object's position (plus an optional per-VOC local offset). ``strength`` is
+an abstract 0..1 knob that maps to GADEN emission parameters
+(``filamentPPMcenter`` and ``numFilaments_sec``); ``strength == 0`` means the
+object does not emit that gas at all (no GADEN source is created for it).
+
+This lets every object declare the full MOX gas panel with explicit zeros, so
+the recorded ppm vector has a fixed layout while only the emitting gases cost
+any GADEN compute.
 """
 
 from __future__ import annotations
@@ -54,6 +59,11 @@ class VOCComponent:
     def num_filaments_sec(self) -> int:
         return int(round(_FILAMENTS_MIN + self.strength * (_FILAMENTS_MAX - _FILAMENTS_MIN)))
 
+    @property
+    def is_active(self) -> bool:
+        """True if this VOC actually emits (strength > 0 -> a GADEN source)."""
+        return self.strength > 0.0
+
     def is_mox_detectable(self) -> bool:
         return self.gas_type in MOX_SUPPORTED
 
@@ -77,13 +87,18 @@ class OdorProfile:
     def __iter__(self):
         return iter(self.components)
 
+    def active_components(self) -> list[VOCComponent]:
+        """VOCs that actually emit (strength > 0); these become GADEN sources."""
+        return [c for c in self.components if c.is_active]
+
     @property
     def num_sources(self) -> int:
-        """Number of GADEN sources this profile expands into (one per VOC)."""
-        return len(self.components)
+        """Number of GADEN sources this profile expands into (active VOCs only)."""
+        return len(self.active_components())
 
     @property
     def gas_types(self) -> list[GasType]:
+        """Every declared gas, active or not (the fixed ppm-vector layout)."""
         return [c.gas_type for c in self.components]
 
     def undetectable_components(self) -> list[VOCComponent]:

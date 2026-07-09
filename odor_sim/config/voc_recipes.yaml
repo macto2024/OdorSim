@@ -34,3 +34,57 @@ recipes:
   solvent_leak:
     - {gas_type: acetone, strength: 0.9}
     - {gas_type: propanol, strength: 0.6, local_offset: [0.0, 0.0, 0.01]}
+
+  # ------------------------------------------------------------------------
+  # Dedicated per-object recipes (one per catalog object in objects.yaml).
+  #
+  # Each lists the full MOX gas panel in a fixed order so the recorded ppm
+  # vector layout is stable across objects. strength 0 means "declared but not
+  # emitted" -- it fixes the ppm column without creating a GADEN source, so it
+  # costs no extra compute. These are flavour, not chemistry: tweak freely.
+  # Gas order: ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone
+  # ------------------------------------------------------------------------
+  obj_odor_cube:
+    - {gas_type: ethanol,  strength: 0.8}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.0}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.4, local_offset: [0.0, 0.0, 0.02]}
+
+  obj_mango:
+    - {gas_type: ethanol,  strength: 0.8}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.2}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.4, local_offset: [0.0, 0.0, 0.02]}
+
+  obj_milk:
+    - {gas_type: ethanol,  strength: 0.15}
+    - {gas_type: methane,  strength: 0.1}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.3}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.1}
+
+  obj_porcelain_mug:
+    - {gas_type: ethanol,  strength: 0.2}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.6, local_offset: [0.0, 0.0, 0.01]}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.9}
+
+  obj_wine_bottle:
+    - {gas_type: ethanol,  strength: 1.0}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.1}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.2}

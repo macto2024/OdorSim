@@ -1,0 +1,71 @@
+# Object catalog for OdorSim.
+#
+# Each named object bundles GEOMETRY (the CAD/primitive robosuite uses to draw
+# and simulate it) with a default ODOR recipe (see voc_recipes.yaml). This lets
+# a task refer to an object by a single name -- e.g. objects=["mango"] -- and
+# get both its shape and its smell.
+#
+# geometry.type is one of:
+#   box    - a primitive BoxObject.
+#              size: [half_x, half_y, half_z] (meters)
+#              rgba: [r, g, b, a]
+#   xml    - a mesh-backed, self-contained robosuite object XML by path
+#              (relative to repo root or absolute). Mesh + texture paths inside
+#              the XML are relative to the XML's own folder. Vendored mesh
+#              objects live under odor_sim/assets/objects/<name>/; to add a new
+#              one, copy its whole self-contained folder there and point path at
+#              its .xml. This is also the drop-in hook for custom CAD.
+#              path: path to the object .xml
+#
+# recipe: name of a dedicated VOC recipe in voc_recipes.yaml. Each object has
+#   its own recipe (conventionally obj_<name>) declaring the full MOX gas panel;
+#   there is no per-task recipe override.
+#
+# rotation / rotation_axis (optional): placement metadata forwarded to the
+#   robosuite UniformRandomSampler. rotation is null (uniform), a scalar (fixed
+#   angle, radians), or [low, high] (uniform range). rotation_axis is x/y/z.
+#   Mesh assets are often modeled lying down, so an upright pose needs a fixed
+#   rotation (mirrors LIBERO's per-object rotation attributes).
+
+objects:
+  # Primitive cube -- preserves the historical OdorLift default behavior.
+  odor_cube:
+    geometry:
+      type: box
+      size: [0.022, 0.022, 0.022]
+      rgba: [0.7, 0.35, 0.15, 1.0]
+    recipe: obj_odor_cube
+
+  # No mango mesh ships here; use a fruit-sized primitive stand-in.
+  # Swap geometry.type to "xml" with a real mango mesh when one is available.
+  mango:
+    geometry:
+      type: box
+      size: [0.035, 0.025, 0.025]
+      rgba: [0.95, 0.6, 0.1, 1.0]
+    recipe: obj_mango
+
+  # Milk carton mesh (modeled lying along its length -> stand it upright).
+  milk:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/milk/milk.xml
+    recipe: obj_milk
+    rotation: [1.5708, 1.5708]
+    rotation_axis: x
+
+  # Porcelain mug mesh.
+  porcelain_mug:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/porcelain_mug/porcelain_mug.xml
+    recipe: obj_porcelain_mug
+    rotation: [-1.5708, -1.5708]
+    rotation_axis: x
+
+  # Wine bottle mesh (a taller container option).
+  wine_bottle:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/wine_bottle/wine_bottle.xml
+    recipe: obj_wine_bottle
