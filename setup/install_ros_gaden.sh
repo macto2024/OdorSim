@@ -13,7 +13,7 @@
 #
 # Usage:
 #   bash setup/install_ros_gaden.sh
-#   ROS_MIRROR=http://packages.ros.org/ros2/ubuntu bash setup/install_ros_gaden.sh  # outside CN
+#   ROS_MIRROR=https://mirrors.ustc.edu.cn/ros2/ubuntu bash setup/install_ros_gaden.sh  # faster in CN
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -28,7 +28,7 @@ GADEN_BRANCH="jazzy"
 OLFACTION_URL="https://github.com/MAPIRlab/olfaction_msgs.git"
 GLM_URL="https://github.com/g-truc/glm.git"
 ROS_DISTRO_NAME="jazzy"
-ROS_MIRROR="${ROS_MIRROR:-https://mirrors.ustc.edu.cn/ros2/ubuntu}"
+ROS_MIRROR="${ROS_MIRROR:-http://packages.ros.org/ros2/ubuntu}"
 
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 export DEBIAN_FRONTEND=noninteractive

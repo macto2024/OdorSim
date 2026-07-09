@@ -16,7 +16,7 @@ datasets/lerobot/       converted LeRobot datasets
 
 ## Setup
 
-Use Ubuntu 24.04 with ROS 2 Jazzy. From the repo root, run these in order:
+Use Ubuntu 24.04. From the repo root, run these in order:
 
 ```bash
 # 1. Install ROS 2 Jazzy, clone/build GADEN, and build the ROS overlay
@@ -30,12 +30,6 @@ Then, in every new shell:
 
 ```bash
 source setup/activate.sh
-```
-
-That one command sources ROS 2, GADEN, the local ROS overlay, and the Python venv. If a conda environment is active, deactivate it first because it can hide the system Python used by ROS:
-
-```bash
-conda deactivate
 ```
 
 ## Common Workflow
@@ -52,14 +46,28 @@ import odor_sim as odorsim
 with odorsim.make("OdorLift", recipe="ripe_fruit") as cosim:
     obs = cosim.reset()
     print(obs["instruction"])
-    for _ in range(100):
+    for _ in range(500):
         obs, reward, done, info = cosim.step(cosim.zero_action())
     print(info["ppm"])
 EOF
 
 # 2. Collect raw demonstrations
-python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device keyboard
+python -m odor_sim.bridge.teleop --env OdorLift --recipe ripe_fruit --device keyboard --odor-monitor
+```
 
+Teleop records **ground-truth ppm** at the end effector plus your **e-nose mode** each step. It does **not** write voltage yet — that comes from synthesis (step 3).
+
+There are two e-nose behaviors, both derived from the same recorded ppm trace:
+
+- **Continuous** — the sensor always sees the plume. Voltage rises and falls as you move through the odor field. No extra keys needed during teleop.
+- **Sniffing (sampling)** — you operate this mode. Press `1` to sniff: the arm auto-holds for ~7 s while the valve is open. Press `0` (idle) or `2` (filter/purge) to close the valve and expose the sensor to clean air so it can decay back toward baseline.
+
+During synthesis, these become two different voltage streams in `features.npz`:
+
+- `enose_voltage_continuous` — always-on MOX response
+- `enose_voltage_sampling` — valve-gated response driven by your `1` / `0` / `2` presses during teleop
+
+```bash
 # 3. Synthesize e-nose voltage features from recorded ppm
 python -m odor_sim.recording.synthesize datasets/teleop
 
@@ -129,7 +137,7 @@ Available tasks:
 
 - `OdorLift`: Lift-style manipulation task with an odor-emitting cube.
 
-Available recipes:
+Available recipes (defined in `odor_sim/config/voc_recipes.yaml`):
 
 - `ripe_fruit`
 - `overripe_fruit`
@@ -138,6 +146,8 @@ Available recipes:
 - `acetone_strong`
 - `faint_alcohol`
 - `solvent_leak`
+
+Add or edit recipes in that file; each recipe is a list of VOC components (gas type + strength) that become GADEN odor sources.
 
 Useful `odor_sim.make(...)` options:
 
@@ -184,11 +194,13 @@ python -m odor_sim.bridge.teleop \
   --out-dir datasets/teleop
 ```
 
-E-nose controls during teleop:
+E-nose controls during teleop (sniffing mode):
 
-- `1`: sample odor. This auto-holds the arm for the sample window.
-- `0`: idle.
-- `2`: filter / purge.
+- `1`: sample / sniff. Opens the valve and auto-holds the arm for the sample window (~7 s by default).
+- `0`: idle. Valve closed; sensor purges toward baseline on clean air.
+- `2`: filter / purge. Same purge behavior as idle.
+
+Continuous mode needs no keys — ppm is always recorded, and synthesis builds the always-on voltage stream from that. Sniffing mode only sees the plume while you hold `1`; synthesis uses the recorded `enose_state` timeline to build the gated voltage stream.
 
 Important teleop options:
 
@@ -220,29 +232,24 @@ datasets/teleop/episode_YYYYMMDD_HHMMSS/
   frames/wrist/*.png
 ```
 
-You can inspect ppm from the latest episode with:
-
-```bash
-python datasets/teleop/ppm_viewer.py
-```
-
-Or save a plot:
-
-```bash
-python datasets/teleop/ppm_viewer.py episode_20260708_173353 --save ppm.png
-```
-
 ## Convert Data To LeRobot
 
 The data pipeline is two stages: synthesize odor sensor features, then convert to LeRobot.
 
-Synthesize e-nose voltage features:
+Synthesize e-nose voltage features (writes `features.npz` next to each episode):
 
 ```bash
 source setup/activate.sh
 
 python -m odor_sim.recording.synthesize datasets/teleop
 ```
+
+This replays each episode's ppm(t) through the MOX model twice:
+
+- **Continuous** → `enose_voltage_continuous` (always exposed to ppm)
+- **Sniffing** → `enose_voltage_sampling` (only exposed while `enose_state == 1`)
+
+Both streams land in `features.npz` and are included in the LeRobot export when you convert.
 
 Useful synthesis options:
 
