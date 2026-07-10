@@ -9,6 +9,6 @@ Two-stage pipeline:
 """
 
 from odor_sim.recording.convert import convert_episodes
-from odor_sim.recording.synthesize import synthesize_episode
+from odor_sim.recording.synthesize import synthesize_episode, synthesize_episode_models
 
-__all__ = ["synthesize_episode", "convert_episodes"]
+__all__ = ["synthesize_episode", "synthesize_episode_models", "convert_episodes"]

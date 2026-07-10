@@ -16,12 +16,19 @@ Because synthesis is a pure function of the stored ``ppm`` + ``enose_state``, it
 is fully re-runnable: change the MOX model / load resistor / Vcc and re-run to
 get different voltages without re-mining.
 
+By default (no ``--mox-model``) every model in
+:data:`odor_sim.sensors.mox_pid.MOX_MODELS` is synthesized, writing one
+``features_<MODEL>.npz`` / ``features_meta_<MODEL>.json`` pair per model plus a
+canonical ``features.npz`` / ``features_meta.json`` for the primary model
+(``TGS2620``) that downstream conversion consumes. Passing ``--mox-model X``
+synthesizes only model ``X`` into the canonical ``features.npz``.
+
 Usage::
 
     source setup/activate.sh
-    python -m odor_sim.recording.synthesize datasets/teleop
+    python -m odor_sim.recording.synthesize datasets/teleop          # all models
     python -m odor_sim.recording.synthesize datasets/teleop/episode_20260708_170047 \\
-        --mox-model TGS2600 --vcc 5.0
+        --mox-model TGS2600 --vcc 5.0                                # single model
 """
 
 from __future__ import annotations
@@ -70,16 +77,45 @@ def _window_record(window, rate: float) -> dict:
     }
 
 
+#: Canonical (model-agnostic) output basename consumed by :mod:`convert`.
+CANONICAL_NAME = "features"
+#: Primary model mirrored into :data:`CANONICAL_NAME` when synthesizing many.
+PRIMARY_MOX_MODEL = MOX_MODELS[0]
+
+
+def _write_features(
+    ep_dir: Path,
+    basename: str,
+    *,
+    continuous,
+    sampling,
+    window_records: list[dict],
+    features_meta: dict,
+) -> Path:
+    """Write one ``<basename>.npz`` + ``<basename>_meta.json`` pair."""
+    features_path = ep_dir / f"{basename}.npz"
+    np.savez(
+        features_path,
+        enose_voltage_continuous=np.asarray(continuous, dtype=np.float32),
+        enose_voltage_sampling=np.asarray(sampling, dtype=np.float32),
+        sample_windows=np.array(window_records, dtype=object),
+    )
+    with open(ep_dir / f"{basename}_meta.json", "w") as f:
+        json.dump(features_meta, f, indent=2)
+    return features_path
+
+
 def synthesize_episode(
     ep_dir: "str | Path",
     *,
-    mox_model: str = "TGS2620",
+    mox_model: str = PRIMARY_MOX_MODEL,
     load_resistance: "float | None" = None,
     vcc: float = 5.0,
     rate: "float | None" = None,
     overwrite: bool = True,
+    output_names: "list[str] | None" = None,
 ) -> Path:
-    """Synthesize + write ``features.npz`` / ``features_meta.json`` for one episode.
+    """Synthesize + write features for one episode with a single MOX model.
 
     Args:
         ep_dir: raw episode dir (must contain ``episode.npz`` + ``meta.json``).
@@ -88,21 +124,24 @@ def synthesize_episode(
         vcc: divider supply voltage (V).
         rate: control frequency (Hz) for the sensor transient; defaults to the
             episode's ``control_freq`` meta (or 20).
-        overwrite: if False and ``features.npz`` exists, skip (returns its path).
+        overwrite: if False and the primary output ``.npz`` exists, skip.
+        output_names: output basenames to write (each gets ``<name>.npz`` +
+            ``<name>_meta.json``). Defaults to ``[CANONICAL_NAME]``.
 
     Returns:
-        Path to the written ``features.npz``.
+        Path to the primary (first) written ``.npz``.
     """
     ep_dir = Path(ep_dir)
+    names = list(output_names) if output_names else [CANONICAL_NAME]
     npz_path = ep_dir / "episode.npz"
     meta_path = ep_dir / "meta.json"
     if not npz_path.is_file():
         raise FileNotFoundError(f"no episode.npz in {ep_dir}")
 
-    features_path = ep_dir / "features.npz"
-    if features_path.is_file() and not overwrite:
-        print(f"[synth] {features_path} exists; skipping (--no-overwrite)")
-        return features_path
+    primary_path = ep_dir / f"{names[0]}.npz"
+    if primary_path.is_file() and not overwrite:
+        print(f"[synth] {primary_path} exists; skipping (--no-overwrite)")
+        return primary_path
 
     meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
     gas_types = list(meta.get("gas_types", []))
@@ -122,13 +161,6 @@ def synthesize_episode(
     sampling, windows = synthesize_sampling(ppm_series, enose_states, sensor=_make_sensor())
 
     window_records = [_window_record(w, rate) for w in windows]
-
-    np.savez(
-        features_path,
-        enose_voltage_continuous=np.asarray(continuous, dtype=np.float32),
-        enose_voltage_sampling=np.asarray(sampling, dtype=np.float32),
-        sample_windows=np.array(window_records, dtype=object),
-    )
 
     baseline = _make_sensor().baseline_voltage()
     features_meta = {
@@ -154,14 +186,85 @@ def synthesize_episode(
         ],
         "note": "offline synthesis from episode.npz ppm(t)+enose_state (Phase 5b)",
     }
-    with open(ep_dir / "features_meta.json", "w") as f:
-        json.dump(features_meta, f, indent=2)
+
+    paths = [
+        _write_features(
+            ep_dir,
+            name,
+            continuous=continuous,
+            sampling=sampling,
+            window_records=window_records,
+            features_meta=features_meta,
+        )
+        for name in names
+    ]
 
     print(
         f"[synth] {ep_dir.name}: {features_meta['num_steps']} steps, "
-        f"{len(window_records)} sample window(s), model={mox_model} -> {features_path.name}"
+        f"{len(window_records)} sample window(s), model={mox_model} "
+        f"-> {', '.join(p.name for p in paths)}"
     )
-    return features_path
+    return paths[0]
+
+
+def synthesize_episode_models(
+    ep_dir: "str | Path",
+    *,
+    mox_models: "list[str] | None" = None,
+    load_resistance: "float | None" = None,
+    vcc: float = 5.0,
+    rate: "float | None" = None,
+    overwrite: bool = True,
+) -> list[Path]:
+    """Synthesize one episode across one or many MOX models.
+
+    A single model writes only the canonical ``features.npz`` /
+    ``features_meta.json``. Multiple models write one
+    ``features_<MODEL>.npz`` / ``features_meta_<MODEL>.json`` pair each, and the
+    primary model (:data:`PRIMARY_MOX_MODEL`, or the first requested) is also
+    mirrored into the canonical ``features.npz`` for downstream conversion.
+
+    Args:
+        ep_dir: raw episode dir (must contain ``episode.npz`` + ``meta.json``).
+        mox_models: models to synthesize; defaults to all of
+            :data:`odor_sim.sensors.mox_pid.MOX_MODELS`.
+        load_resistance: voltage-divider RL [ohms]; defaults to each model's R0.
+        vcc: divider supply voltage (V).
+        rate: control frequency (Hz); defaults to the episode's ``control_freq``.
+        overwrite: if False, skip a model whose primary output already exists.
+
+    Returns:
+        Primary ``.npz`` path written for each synthesized model.
+    """
+    models = list(mox_models) if mox_models else list(MOX_MODELS)
+    if not models:
+        raise ValueError("no MOX models to synthesize")
+
+    # Put the primary model first so its canonical mirror reflects the default.
+    if len(models) > 1 and PRIMARY_MOX_MODEL in models:
+        models = [PRIMARY_MOX_MODEL] + [m for m in models if m != PRIMARY_MOX_MODEL]
+
+    single = len(models) == 1
+    paths: list[Path] = []
+    for i, model in enumerate(models):
+        if single:
+            output_names = [CANONICAL_NAME]
+        else:
+            output_names = [f"{CANONICAL_NAME}_{model}"]
+            if i == 0:
+                output_names.append(CANONICAL_NAME)
+        paths.append(
+            synthesize_episode(
+                ep_dir,
+                mox_model=model,
+                load_resistance=load_resistance,
+                vcc=vcc,
+                rate=rate,
+                overwrite=overwrite,
+                output_names=output_names,
+            )
+        )
+    return paths
 
 
 def _find_episode_dirs(root: Path) -> list[Path]:
@@ -180,9 +283,10 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--mox-model",
-        default="TGS2620",
+        default=None,
         choices=list(MOX_MODELS),
-        help="MOX sensor model (default TGS2620)",
+        help="MOX sensor model; default synthesizes ALL models "
+        f"({', '.join(MOX_MODELS)})",
     )
     parser.add_argument(
         "--load-resistance",
@@ -211,16 +315,20 @@ def main(argv=None) -> int:
         print("[synth] no episodes found")
         return 1
 
+    mox_models = [args.mox_model] if args.mox_model else list(MOX_MODELS)
     for ep in episodes:
-        synthesize_episode(
+        synthesize_episode_models(
             ep,
-            mox_model=args.mox_model,
+            mox_models=mox_models,
             load_resistance=args.load_resistance,
             vcc=args.vcc,
             rate=args.rate,
             overwrite=not args.no_overwrite,
         )
-    print(f"[synth] done: {len(episodes)} episode(s)")
+    print(
+        f"[synth] done: {len(episodes)} episode(s) x {len(mox_models)} model(s) "
+        f"({', '.join(mox_models)})"
+    )
     return 0
 
 

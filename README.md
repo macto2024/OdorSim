@@ -278,11 +278,23 @@ This replays each episode's ppm(t) through the MOX model twice:
 - **Continuous** → `enose_voltage_continuous` (always exposed to ppm)
 - **Sniffing** → `enose_voltage_sampling` (only exposed while `enose_state == 1`)
 
+By default **every** MOX model is synthesized. Each model writes its own
+`features_<MODEL>.npz` / `features_meta_<MODEL>.json` pair, and the primary model
+(`TGS2620`) is also mirrored into the canonical `features.npz` / `features_meta.json`
+that the LeRobot export consumes. This lets you compare sensors offline without
+re-teleoping. Pass `--mox-model X` to synthesize just model `X` into `features.npz`:
+
+```bash
+# One episode, single sensor only
+python -m odor_sim.recording.synthesize datasets/teleop/episode_<timestamp> \
+  --mox-model TGS2600 --no-overwrite
+```
+
 Both streams land in `features.npz` and are included in the LeRobot export when you convert.
 
 Useful synthesis options:
 
-- `--mox-model`: MOX model, default `TGS2620`.
+- `--mox-model`: MOX model. Omit to synthesize all models (`TGS2620`, `TGS2600`, `TGS2611`, `TGS2610`, `TGS2612`); the default export uses `TGS2620`.
 - `--load-resistance`: voltage-divider load resistance in ohms.
 - `--vcc`: supply voltage, default `5.0`.
 - `--rate`: sensor update rate, default is the episode control frequency.
