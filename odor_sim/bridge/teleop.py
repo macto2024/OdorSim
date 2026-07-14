@@ -94,10 +94,16 @@ class EpisodeRecorder:
     ``camera_map`` is given, per-step camera frames written as PNG sequences
     under ``frames/<subdir>/``.
 
+    Also stores supervised odor labels per step: ``source_identity`` (class
+    index of the target object) and ``source_distance`` (e-nose site to target
+    body center, meters), plus ``enose_pos`` / ``target_pos`` for provenance.
+
     Args:
         camera_map: ``{obs_image_key: frames_subdir}`` (e.g.
             ``{"agentview_image": "agentview", "robot0_eye_in_hand_image": "wrist"}``).
             Empty/None disables frame capture (headless path).
+        target_index: class index of the active odor source within ``objects``.
+        num_classes: number of spawned object classes for this episode.
     """
 
     def __init__(
@@ -107,12 +113,16 @@ class EpisodeRecorder:
         gas_types: list,
         meta: dict,
         camera_map: "dict | None" = None,
+        target_index: int = 0,
+        num_classes: int = 1,
     ):
         self.out_dir = Path(out_dir)
         self.instruction = instruction
         self.gas_types = list(gas_types)
         self.meta = dict(meta)
         self.camera_map = dict(camera_map or {})
+        self.target_index = int(target_index)
+        self.num_classes = int(num_classes)
         self._rows: list[dict] = []
         self._image_size: "tuple | None" = None
         self.ep_dir: "Path | None" = None
@@ -143,6 +153,9 @@ class EpisodeRecorder:
         enose_state,
         sampling_active,
         ppm,
+        source_distance: float,
+        enose_pos,
+        target_pos,
         proprio: "dict | None" = None,
         frames: "dict | None" = None,
     ):
@@ -153,6 +166,10 @@ class EpisodeRecorder:
             "enose_state": int(enose_state),
             "sampling_active": bool(sampling_active),
             "ppm": np.asarray([float(ppm.get(g, 0.0)) for g in self.gas_types], dtype=np.float32),
+            "source_identity": self.target_index,
+            "source_distance": float(source_distance),
+            "enose_pos": np.asarray(enose_pos, dtype=np.float32).ravel()[:3],
+            "target_pos": np.asarray(target_pos, dtype=np.float32).ravel()[:3],
         }
         if proprio:
             row["proprio"] = {
@@ -191,6 +208,7 @@ class EpisodeRecorder:
             return None
         ep_dir = self._ensure_dir()
 
+        t_count = len(self._rows)
         arrays = {
             "sim_time": np.array([r["sim_time"] for r in self._rows], dtype=np.float32),
             "state": np.stack([r["state"] for r in self._rows]),
@@ -198,18 +216,29 @@ class EpisodeRecorder:
             "enose_state": np.array([r["enose_state"] for r in self._rows], dtype=np.int8),
             "sampling_active": np.array([r["sampling_active"] for r in self._rows], dtype=bool),
             "ppm": np.stack([r["ppm"] for r in self._rows]),
+            "source_identity": np.full(t_count, self.target_index, dtype=np.int64),
+            "source_distance": np.array(
+                [r["source_distance"] for r in self._rows], dtype=np.float32
+            ),
+            "enose_pos": np.stack([r["enose_pos"] for r in self._rows]),
+            "target_pos": np.stack([r["target_pos"] for r in self._rows]),
         }
         proprio = self._stack_proprio()
         arrays.update(proprio)
         np.savez(ep_dir / "episode.npz", **arrays)
 
+        class_names = list(self.meta.get("objects") or [])
         meta = {
             "instruction": self.instruction,
             "gas_types": self.gas_types,
-            "num_steps": len(self._rows),
+            "num_steps": t_count,
             "success": bool(success),
             "note": "raw ppm(t) stored; voltage synthesized offline (Phase 5b)",
             "proprio_keys": sorted(proprio.keys()),
+            "source_identity_index": self.target_index,
+            "class_names": class_names,
+            "num_classes": self.num_classes,
+            "distance_reference": "enose_site_to_target_body_center",
             **self.meta,
         }
         if self.camera_map:
@@ -383,10 +412,18 @@ class TeleopSession:
         if self.bridge is not None:
             rec = self.bridge.step_env(self.env)
             sim_time, ppm = rec["sim_time"], rec["ppm"]
+            enose_pos = rec["ee_pos_world"]
             if self.cosim.odor_monitor is not None:
                 self.cosim.odor_monitor.record(sim_time, ppm)
         else:
             sim_time, ppm = 0.0, {}
+            enose_pos = self.env.get_enose_site_pose()[0]
+
+        target_name = self.env.target_object_name
+        target_pos = self.env.get_object_world_poses()[target_name][0]
+        source_distance = float(
+            np.linalg.norm(np.asarray(enose_pos, dtype=float) - np.asarray(target_pos, dtype=float))
+        )
 
         recorder.add(
             sim_time=sim_time,
@@ -395,6 +432,9 @@ class TeleopSession:
             enose_state=eff_enose,
             sampling_active=sampling,
             ppm=ppm,
+            source_distance=source_distance,
+            enose_pos=enose_pos,
+            target_pos=target_pos,
             proprio=self._structured_proprio(obs),
             frames=self._extract_frames(obs) if self.camera_map else None,
         )
@@ -417,9 +457,16 @@ class TeleopSession:
         self.bridge.publish_source_poses(self.env.get_gaden_source_poses())
 
     def _new_recorder(self, instruction: str) -> EpisodeRecorder:
+        object_names = list(getattr(self.env, "object_names", None) or [])
+        target_name = getattr(self.env, "target_object_name", None)
+        if target_name is not None and target_name in object_names:
+            target_index = object_names.index(target_name)
+        else:
+            target_index = 0
+        num_classes = max(len(object_names), 1)
         meta = {
-            "objects": getattr(self.env, "object_names", None),
-            "target_object": getattr(self.env, "target_object_name", None),
+            "objects": object_names or None,
+            "target_object": target_name,
             "robots": self.robots,
             "control_freq": self.control_freq,
             "sample_hold_steps": self.sample_hold_steps,
@@ -430,7 +477,13 @@ class TeleopSession:
             "scene_id": self.scene_id,
         }
         return EpisodeRecorder(
-            self.out_dir, instruction, self.gas_types, meta, camera_map=self.camera_map
+            self.out_dir,
+            instruction,
+            self.gas_types,
+            meta,
+            camera_map=self.camera_map,
+            target_index=target_index,
+            num_classes=num_classes,
         )
 
     def _update_success_hold(self, hold_count: int) -> tuple[int, bool]:

@@ -10,6 +10,8 @@ recorded ppm(t) series through the shared sensor model
     ``enose_state == 1``),
   * ``sample_windows``           - completed sampling windows with voltage/ppm
     traces and a ground-truth ``odor_class`` label.
+  * ``source_identity`` / ``source_distance`` - carried from ``episode.npz``
+    when present (aligned 1:1 with the voltage streams).
 
 Results are written next to the episode as ``features.npz`` + ``features_meta.json``.
 Because synthesis is a pure function of the stored ``ppm`` + ``enose_state``, it
@@ -91,18 +93,48 @@ def _write_features(
     sampling,
     window_records: list[dict],
     features_meta: dict,
+    source_identity: "np.ndarray | None" = None,
+    source_distance: "np.ndarray | None" = None,
 ) -> Path:
     """Write one ``<basename>.npz`` + ``<basename>_meta.json`` pair."""
     features_path = ep_dir / f"{basename}.npz"
-    np.savez(
-        features_path,
-        enose_voltage_continuous=np.asarray(continuous, dtype=np.float32),
-        enose_voltage_sampling=np.asarray(sampling, dtype=np.float32),
-        sample_windows=np.array(window_records, dtype=object),
-    )
+    arrays = {
+        "enose_voltage_continuous": np.asarray(continuous, dtype=np.float32),
+        "enose_voltage_sampling": np.asarray(sampling, dtype=np.float32),
+        "sample_windows": np.array(window_records, dtype=object),
+    }
+    if source_identity is not None:
+        arrays["source_identity"] = np.asarray(source_identity, dtype=np.int64).ravel()
+    if source_distance is not None:
+        arrays["source_distance"] = np.asarray(source_distance, dtype=np.float32).ravel()
+    np.savez(features_path, **arrays)
     with open(ep_dir / f"{basename}_meta.json", "w") as f:
         json.dump(features_meta, f, indent=2)
     return features_path
+
+
+def _check_label_lengths(
+    *,
+    num_steps: int,
+    continuous,
+    sampling,
+    source_identity: "np.ndarray | None",
+    source_distance: "np.ndarray | None",
+) -> None:
+    """Raise if voltage streams and optional labels disagree on length ``T``."""
+    checks = {
+        "enose_voltage_continuous": len(continuous),
+        "enose_voltage_sampling": len(sampling),
+    }
+    if source_identity is not None:
+        checks["source_identity"] = int(np.asarray(source_identity).shape[0])
+    if source_distance is not None:
+        checks["source_distance"] = int(np.asarray(source_distance).shape[0])
+    mismatches = {name: n for name, n in checks.items() if n != num_steps}
+    if mismatches:
+        raise ValueError(
+            f"label/voltage length mismatch vs ppm T={num_steps}: {mismatches}"
+        )
 
 
 def synthesize_episode(
@@ -153,12 +185,28 @@ def synthesize_episode(
         raise ValueError(f"{meta_path} has no gas_types; cannot map ppm columns")
     ppm_series = _ppm_series(episode, gas_types)
     enose_states = [int(x) for x in np.asarray(episode["enose_state"]).ravel()]
+    num_steps = int(np.asarray(episode["ppm"]).shape[0])
+
+    source_identity = None
+    source_distance = None
+    if "source_identity" in episode.files:
+        source_identity = np.asarray(episode["source_identity"], dtype=np.int64).ravel()
+    if "source_distance" in episode.files:
+        source_distance = np.asarray(episode["source_distance"], dtype=np.float32).ravel()
 
     def _make_sensor() -> MOXSensor:
         return MOXSensor(model=mox_model, rate=rate, load_resistance=load_resistance, vcc=vcc)
 
     continuous = synthesize_continuous(ppm_series, sensor=_make_sensor())
     sampling, windows = synthesize_sampling(ppm_series, enose_states, sensor=_make_sensor())
+
+    _check_label_lengths(
+        num_steps=num_steps,
+        continuous=continuous,
+        sampling=sampling,
+        source_identity=source_identity,
+        source_distance=source_distance,
+    )
 
     window_records = [_window_record(w, rate) for w in windows]
 
@@ -171,7 +219,7 @@ def synthesize_episode(
         "Vcc": vcc,
         "rate": rate,
         "baseline_voltage": baseline,
-        "num_steps": int(np.asarray(episode["ppm"]).shape[0]),
+        "num_steps": num_steps,
         "gas_types": gas_types,
         "num_sample_windows": len(window_records),
         "sample_windows": [
@@ -186,6 +234,18 @@ def synthesize_episode(
         ],
         "note": "offline synthesis from episode.npz ppm(t)+enose_state (Phase 5b)",
     }
+    if "class_names" in meta:
+        features_meta["class_names"] = list(meta["class_names"])
+    elif "objects" in meta:
+        features_meta["class_names"] = list(meta["objects"] or [])
+    if "num_classes" in meta:
+        features_meta["num_classes"] = int(meta["num_classes"])
+    elif "class_names" in features_meta:
+        features_meta["num_classes"] = len(features_meta["class_names"])
+    if "source_identity_index" in meta:
+        features_meta["source_identity_index"] = int(meta["source_identity_index"])
+    elif source_identity is not None and source_identity.size:
+        features_meta["source_identity_index"] = int(source_identity[0])
 
     paths = [
         _write_features(
@@ -195,6 +255,8 @@ def synthesize_episode(
             sampling=sampling,
             window_records=window_records,
             features_meta=features_meta,
+            source_identity=source_identity,
+            source_distance=source_distance,
         )
         for name in names
     ]

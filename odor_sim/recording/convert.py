@@ -16,6 +16,9 @@ Feature mapping:
   * ``observation.enose_state``   <- ternary sampling token
   * ``observation.enose_voltage_continuous`` / ``...sampling`` <- Phase 5b
                                      ``features.npz`` (only if present)
+  * ``observation.source_identity`` / ``observation.source_distance``
+                                     <- ground-truth odor labels (episode.npz
+                                     or features.npz; only if present)
   * ``task``                      <- ``meta.instruction``
 
 Odor voltage is kept as its own observation channel (not folded into
@@ -102,7 +105,24 @@ def _build_features(sample: dict, cameras: dict, use_videos: bool) -> dict:
     if sample["has_voltage"]:
         for name in ("enose_voltage_continuous", "enose_voltage_sampling"):
             features[f"observation.{name}"] = {"dtype": "float32", "shape": [1], "names": [name]}
+    if sample["source_identity"] is not None:
+        features["observation.source_identity"] = {
+            "dtype": "float32",
+            "shape": [1],
+            "names": ["source_identity"],
+        }
+    if sample["source_distance"] is not None:
+        features["observation.source_distance"] = {
+            "dtype": "float32",
+            "shape": [1],
+            "names": ["source_distance"],
+        }
     return features
+
+
+def _assert_synced(name: str, length: int, T: int) -> None:
+    if length != T:
+        raise ValueError(f"sync check failed: {name} has length {length}, expected T={T}")
 
 
 def _load_episode(ep_dir: Path, cameras_meta: dict):
@@ -117,18 +137,51 @@ def _load_episode(ep_dir: Path, cameras_meta: dict):
     enose_state = np.asarray(episode["enose_state"], dtype=np.float32).reshape(-1, 1)
 
     T = action.shape[0]
+    gas_types = list(meta.get("gas_types", []))
+
     voltage = {}
     features_path = ep_dir / "features.npz"
+    feats = None
     if features_path.is_file():
         feats = np.load(features_path, allow_pickle=True)
         for name in ("enose_voltage_continuous", "enose_voltage_sampling"):
             if name in feats.files:
                 voltage[name] = np.asarray(feats[name], dtype=np.float32).reshape(-1, 1)
 
+    source_identity = None
+    source_distance = None
+    if "source_identity" in episode.files:
+        source_identity = np.asarray(episode["source_identity"], dtype=np.float32).reshape(-1, 1)
+    elif feats is not None and "source_identity" in feats.files:
+        source_identity = np.asarray(feats["source_identity"], dtype=np.float32).reshape(-1, 1)
+    if "source_distance" in episode.files:
+        source_distance = np.asarray(episode["source_distance"], dtype=np.float32).reshape(-1, 1)
+    elif feats is not None and "source_distance" in feats.files:
+        source_distance = np.asarray(feats["source_distance"], dtype=np.float32).reshape(-1, 1)
+
+    # Synchronization: every modality must match action length T.
+    _assert_synced("ppm", ppm.shape[0], T)
+    _assert_synced("enose_state", enose_state.shape[0], T)
+    _assert_synced("state", state.shape[0], T)
+    if gas_types and ppm.ndim == 2 and ppm.shape[1] != len(gas_types):
+        raise ValueError(
+            f"sync check failed: ppm columns {ppm.shape[1]} != len(gas_types)={len(gas_types)}"
+        )
+    for cam, frames in images.items():
+        _assert_synced(f"images.{cam}", frames.shape[0], T)
+    for name, arr in voltage.items():
+        _assert_synced(name, arr.shape[0], T)
+    if source_identity is not None:
+        _assert_synced("source_identity", source_identity.shape[0], T)
+    if source_distance is not None:
+        _assert_synced("source_distance", source_distance.shape[0], T)
+
     return {
         "num_steps": T,
         "instruction": meta.get("instruction", ""),
-        "gas_types": list(meta.get("gas_types", [])),
+        "gas_types": gas_types,
+        "class_names": list(meta.get("class_names") or meta.get("objects") or []),
+        "num_classes": meta.get("num_classes"),
         "images": images,
         "state": state,
         "state_names": state_names,
@@ -137,6 +190,8 @@ def _load_episode(ep_dir: Path, cameras_meta: dict):
         "enose_state": enose_state,
         "voltage": voltage,
         "has_voltage": bool(voltage),
+        "source_identity": source_identity,
+        "source_distance": source_distance,
     }
 
 
@@ -230,6 +285,10 @@ def convert_episodes(
                 frame[f"observation.images.{cam}"] = data["images"][cam][t]
             for name, arr in data["voltage"].items():
                 frame[f"observation.{name}"] = arr[t]
+            if data["source_identity"] is not None:
+                frame["observation.source_identity"] = data["source_identity"][t]
+            if data["source_distance"] is not None:
+                frame["observation.source_distance"] = data["source_distance"][t]
             dataset.add_frame(frame)
         dataset.save_episode()
         total_frames += T
