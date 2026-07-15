@@ -19,11 +19,14 @@ Two entry points:
 
 E-nose keys (added on top of robosuite's keyboard controls; digits 3/4/5
 avoid the contested 0/1/2 range):
-    ``3`` sample (auto-hold ~7 s)   ``4`` idle    ``5`` filter/purge
+    ``3`` sample (auto: ~7 s sample hold -> ~10 s filter -> idle)
+    ``4`` idle (immediate; cancels an in-flight sequence)
+    ``5`` filter/purge (immediate; cancels an in-flight sequence)
 Auto-hold: one ``sample`` press freezes the arm for the sample window (motion
 ignored) so every sniff is a clean stationary dwell; those steps carry a
-``sampling_active`` mask. The HUD and ``[enose]`` log lines report idle /
-FILTER / SAMPLE and the remaining hold time while sniffing.
+``sampling_active`` mask. After sample, the valve auto-switches to FILTER
+for the filter window, then IDLE. The HUD and ``[enose]`` log lines report
+the phase and remaining time.
 
 Since Phase 4.5 the GADEN server is spawned automatically via ``odor_sim.make``,
 so a single command is enough (no separate server terminal)::
@@ -265,6 +268,7 @@ class TeleopSession:
         target_object: str | None = None,
         scenario: str = DEFAULT_SCENARIO,
         sample_hold_s: float = 7.0,
+        filter_hold_s: float = 10.0,
         use_bridge: bool = True,
         out_dir: str = "datasets/teleop",
         has_renderer: bool = False,
@@ -297,6 +301,7 @@ class TeleopSession:
         self.success_hold_steps = int(success_hold_steps)
         self.control_freq = control_freq
         self.sample_hold_steps = int(round(sample_hold_s * control_freq))
+        self.filter_hold_steps = int(round(filter_hold_s * control_freq))
         self.out_dir = out_dir
         self._vis_wrapped = False
         self.record_frames = bool(record_frames)
@@ -354,7 +359,8 @@ class TeleopSession:
         # Fixed gas-vector layout from the objects' full profiles (incl. inert
         # strength-0 gases), so recorded ppm has the same columns every run.
         self.gas_types = list(self.env.gas_types)
-        self._hold_left = 0
+        self._seq_phase: str | None = None  # None | "sample" | "filter"
+        self._phase_left = 0
 
     def close(self):
         self.cosim.close()
@@ -390,22 +396,71 @@ class TeleopSession:
                 frames[obs_key] = np.asarray(img[::-1], dtype=np.uint8)
         return frames
 
-    def _apply_hold(self, env_action: np.ndarray, enose_state: int, gripper_dof: int):
-        if enose_state == SAMPLE and self._hold_left == 0:
-            self._hold_left = self.sample_hold_steps
+    def _zero_arm(self, env_action: np.ndarray, gripper_dof: int) -> np.ndarray:
+        held = env_action.copy()
+        if gripper_dof > 0:
+            held[:-gripper_dof] = 0.0
+        else:
+            held[:] = 0.0
+        return held
 
-        if self._hold_left > 0:
-            held = env_action.copy()
-            if gripper_dof > 0:
-                held[:-gripper_dof] = 0.0
-            else:
-                held[:] = 0.0
-            self._hold_left -= 1
+    def _cancel_enose_sequence(self) -> None:
+        self._seq_phase = None
+        self._phase_left = 0
+
+    def _apply_hold(
+        self,
+        env_action: np.ndarray,
+        enose_state: int,
+        gripper_dof: int,
+        forced: bool = False,
+    ):
+        """Apply sample→filter→idle auto sequence, with immediate 4/5 overrides.
+
+        Pressing sample (``3``) starts: SAMPLE hold -> FILTER window -> IDLE.
+        A *forced* idle/filter (operator just pressed ``4`` / ``5``) cancels
+        the sequence immediately. Latched idle after a one-shot sample does
+        not cancel — the auto sequence continues.
+        """
+        if forced and enose_state == IDLE:
+            self._cancel_enose_sequence()
+            return env_action, IDLE, False
+
+        if forced and enose_state == FILTER:
+            self._cancel_enose_sequence()
+            return env_action, FILTER, False
+
+        if enose_state == SAMPLE:
+            self._seq_phase = "sample"
+            self._phase_left = self.sample_hold_steps
+
+        if self._seq_phase == "sample":
+            held = self._zero_arm(env_action, gripper_dof)
+            self._phase_left -= 1
+            if self._phase_left <= 0:
+                self._seq_phase = "filter"
+                self._phase_left = self.filter_hold_steps
             return held, SAMPLE, True
+
+        if self._seq_phase == "filter":
+            self._phase_left -= 1
+            if self._phase_left <= 0:
+                self._cancel_enose_sequence()
+            return env_action, FILTER, False
+
         return env_action, enose_state, False
 
-    def step(self, recorder: EpisodeRecorder, env_action: np.ndarray, enose_state: int, gripper_dof: int):
-        env_action, eff_enose, sampling = self._apply_hold(env_action, enose_state, gripper_dof)
+    def step(
+        self,
+        recorder: EpisodeRecorder,
+        env_action: np.ndarray,
+        enose_state: int,
+        gripper_dof: int,
+        enose_forced: bool = False,
+    ):
+        env_action, eff_enose, sampling = self._apply_hold(
+            env_action, enose_state, gripper_dof, forced=enose_forced
+        )
 
         # Match OdorCosimSession.step() order: advance physics first, then step
         # GADEN and query ppm at the post-step EE pose.
@@ -472,6 +527,7 @@ class TeleopSession:
             "robots": self.robots,
             "control_freq": self.control_freq,
             "sample_hold_steps": self.sample_hold_steps,
+            "filter_hold_steps": self.filter_hold_steps,
             "success_hold_steps": self.success_hold_steps,
             "action_layout": "[robosuite_action..., enose_state]",
             "controller_type": self.controller_type,
@@ -545,7 +601,7 @@ class TeleopSession:
                 self.cosim.odor_monitor.reset()
             self.env.render()
             device.start_control()
-            self._hold_left = 0
+            self._cancel_enose_sequence()
             enose_keys.reset()
             task_completion_hold_count = -1
 
@@ -578,18 +634,22 @@ class TeleopSession:
                 for g in prev_gripper:
                     prev_gripper[g] = action_dict[g]
 
-                enose_state = enose_keys.consume()
-                _, _, _, _, eff, samp = self.step(recorder, env_action, enose_state, gripper_dof)
+                enose_state, enose_forced = enose_keys.consume()
+                _, _, _, _, eff, samp = self.step(
+                    recorder, env_action, enose_state, gripper_dof, enose_forced=enose_forced
+                )
                 self.env.render()
                 if (eff, samp) != (prev_eff, prev_samp):
                     token = {SAMPLE: "SAMPLE", IDLE: "idle", FILTER: "FILTER"}.get(eff, "?")
-                    if samp:
-                        hold_s = self._hold_left / float(self.env.control_freq)
+                    if self._seq_phase is not None and self._phase_left > 0:
+                        hold_s = self._phase_left / float(self.env.control_freq)
                         print(
-                            f"\n[enose] state={token}  sampling=ON  "
-                            f"auto-hold ~{hold_s:.1f}s remaining",
+                            f"\n[enose] state={token}  phase={self._seq_phase}  "
+                            f"~{hold_s:.1f}s remaining",
                             flush=True,
                         )
+                    elif samp:
+                        print(f"\n[enose] state={token}  sampling=ON", flush=True)
                     else:
                         print(
                             f"\n[enose] state={token}  sampling=OFF  valve closed",
@@ -602,7 +662,8 @@ class TeleopSession:
                     samp,
                     len(recorder),
                     success_hold_count=task_completion_hold_count,
-                    hold_left=self._hold_left,
+                    hold_left=self._phase_left,
+                    seq_phase=self._seq_phase,
                     control_freq=float(self.env.control_freq),
                 )
 
@@ -660,10 +721,11 @@ class TeleopSession:
         return (
             "\n=== OdorSim teleop ===\n"
             "  arm/gripper: standard robosuite keyboard controls\n"
-            f"  e-nose:  {KEY_SAMPLE} = sample/sniff (auto-hold ~7 s)\n"
-            f"           {KEY_IDLE} = idle (valve closed)\n"
-            f"           {KEY_FILTER} = filter/purge\n"
-            "  HUD line shows enose state + hold countdown while sniffing\n"
+            f"  e-nose:  {KEY_SAMPLE} = sample/sniff "
+            f"(auto: ~7 s SAMPLE hold -> ~10 s FILTER -> idle)\n"
+            f"           {KEY_IDLE} = idle now (cancels sequence)\n"
+            f"           {KEY_FILTER} = filter/purge now (cancels sequence)\n"
+            "  HUD line shows enose phase + countdown\n"
             "  end episode: the device reset key (Ctrl+Q on keyboard)\n"
             "  sustained task success auto-ends the episode (collect-style)\n"
         )
@@ -676,12 +738,18 @@ class TeleopSession:
         step_i,
         success_hold_count=-1,
         hold_left=0,
+        seq_phase=None,
         control_freq=20.0,
     ):
         token = {SAMPLE: "SAMPLE", IDLE: "idle", FILTER: "FILTER"}.get(enose_state, "?")
-        if sampling and hold_left > 0 and control_freq > 0:
+        if seq_phase and hold_left > 0 and control_freq > 0:
             hold_s = hold_left / float(control_freq)
-            tag = f" [SNIFFING hold={hold_s:.1f}s left]"
+            if seq_phase == "sample":
+                tag = f" [SNIFFING hold={hold_s:.1f}s left -> then FILTER]"
+            elif seq_phase == "filter":
+                tag = f" [FILTERING purge={hold_s:.1f}s left -> then idle]"
+            else:
+                tag = f" [{seq_phase} {hold_s:.1f}s left]"
         elif sampling:
             tag = " [SNIFFING]"
         else:
@@ -764,6 +832,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--sample-hold-s", type=float, default=7.0)
     parser.add_argument(
+        "--filter-hold-s",
+        type=float,
+        default=10.0,
+        help="auto FILTER duration after sample before returning to idle (default 10 s)",
+    )
+    parser.add_argument(
         "--success-hold-steps",
         type=int,
         default=10,
@@ -802,6 +876,7 @@ def main(argv=None) -> int:
         target_object=args.target_object,
         scenario=args.scenario,
         sample_hold_s=args.sample_hold_s,
+        filter_hold_s=args.filter_hold_s,
         use_bridge=not args.no_bridge,
         out_dir=args.out_dir,
         has_renderer=True,
