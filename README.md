@@ -60,12 +60,12 @@ Teleop records **ground-truth ppm** at the end effector plus your **e-nose mode*
 There are two e-nose behaviors, both derived from the same recorded ppm trace:
 
 - **Continuous** — the sensor always sees the plume. Voltage rises and falls as you move through the odor field. No extra keys needed during teleop.
-- **Sniffing (sampling)** — you operate this mode. Press `1` to sniff: the arm auto-holds for ~7 s while the valve is open. Press `0` (idle) or `2` (filter/purge) to close the valve and expose the sensor to clean air so it can decay back toward baseline.
+- **Sniffing (sampling)** — you operate this mode. Press `3` to sniff: the arm auto-holds for ~7 s while sampling, then auto-filters/purges for ~10 s, then returns to idle. Press `4` (idle) or `5` (filter/purge) at any time to cancel the sequence and go there immediately.
 
 During synthesis, these become two different voltage streams in `features.npz`:
 
 - `enose_voltage_continuous` — always-on MOX response
-- `enose_voltage_sampling` — valve-gated response driven by your `1` / `0` / `2` presses during teleop
+- `enose_voltage_sampling` — valve-gated response driven by your `3` / `4` / `5` presses during teleop
 
 ```bash
 # 3. Synthesize e-nose voltage features from recorded ppm
@@ -222,12 +222,14 @@ python -m odor_sim.bridge.teleop \
 | Input | Action |
 |-------|--------|
 | robosuite keyboard / SpaceMouse | move arm and gripper (standard robosuite device controls) |
-| `1` | e-nose **sample / sniff** — opens valve, auto-holds arm ~7 s (`--sample-hold-s`) |
-| `0` | e-nose **idle** — valve closed, sensor purges toward baseline |
-| `2` | e-nose **filter / purge** — same purge behavior as idle |
+| `3` | e-nose **sample / sniff** — SAMPLE ~7 s (arm hold) → FILTER ~10 s → idle |
+| `4` | e-nose **idle** now — cancels an in-flight sample/filter sequence |
+| `5` | e-nose **filter / purge** now — cancels an in-flight sequence |
 | device reset key (`Ctrl+Q` on keyboard) | end episode manually |
 
-Continuous odor mode needs no e-nose keys — ppm is always recorded. Sniffing mode only exposes the sensor to the plume while you hold `1`; synthesis uses the recorded `enose_state` timeline to build the gated voltage stream.
+E-nose keys use `3`/`4`/`5` so they stay clear of contested `0`/`1`/`2`. Durations are `--sample-hold-s` (default 7) and `--filter-hold-s` (default 10). Teleop prints a live HUD with phase countdown and logs each key press plus every state transition.
+
+Continuous odor mode needs no e-nose keys — ppm is always recorded. Sniffing mode only exposes the sensor to the plume while sampling (`3`); synthesis uses the recorded `enose_state` timeline to build the gated voltage stream.
 
 **What gets recorded** (`datasets/teleop/episode_YYYYMMDD_HHMMSS/`):
 
@@ -254,6 +256,7 @@ Important teleop options:
 - `--rot-sensitivity`: rotation input scale, default `1.0`.
 - `--goal-update-mode`: `target` or `achieved`, default `target`.
 - `--sample-hold-s`: seconds to auto-hold when sampling, default `7.0`.
+- `--filter-hold-s`: seconds of auto FILTER after sample before idle, default `10.0`.
 - `--success-hold-steps`: successful steps before auto-ending, default `10`; use `0` to disable.
 - `--out-dir`: raw dataset output directory, default `datasets/teleop`.
 - `--no-frames`: disable camera-frame recording.

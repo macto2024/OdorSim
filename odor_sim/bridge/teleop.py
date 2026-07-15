@@ -17,11 +17,13 @@ Two entry points:
   * :meth:`TeleopSession.run_scripted` - fixed action/enose schedule, headless;
     used by the Phase 4b smoke test (no display, no human).
 
-E-nose keys (added on top of robosuite's keyboard controls):
-    ``1`` sample (auto-hold ~7 s)   ``0`` idle    ``2`` filter/purge
+E-nose keys (added on top of robosuite's keyboard controls; digits 3/4/5
+avoid the contested 0/1/2 range):
+    ``3`` sample (auto-hold ~7 s)   ``4`` idle    ``5`` filter/purge
 Auto-hold: one ``sample`` press freezes the arm for the sample window (motion
 ignored) so every sniff is a clean stationary dwell; those steps carry a
-``sampling_active`` mask.
+``sampling_active`` mask. The HUD and ``[enose]`` log lines report idle /
+FILTER / SAMPLE and the remaining hold time while sniffing.
 
 Since Phase 4.5 the GADEN server is spawned automatically via ``odor_sim.make``,
 so a single command is enough (no separate server terminal)::
@@ -556,6 +558,7 @@ class TeleopSession:
                 for arm in active_robot.arms
                 if active_robot.gripper[arm].dof > 0
             }
+            prev_eff, prev_samp = None, None
 
             while True:
                 start = time.time()
@@ -578,12 +581,29 @@ class TeleopSession:
                 enose_state = enose_keys.consume()
                 _, _, _, _, eff, samp = self.step(recorder, env_action, enose_state, gripper_dof)
                 self.env.render()
+                if (eff, samp) != (prev_eff, prev_samp):
+                    token = {SAMPLE: "SAMPLE", IDLE: "idle", FILTER: "FILTER"}.get(eff, "?")
+                    if samp:
+                        hold_s = self._hold_left / float(self.env.control_freq)
+                        print(
+                            f"\n[enose] state={token}  sampling=ON  "
+                            f"auto-hold ~{hold_s:.1f}s remaining",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"\n[enose] state={token}  sampling=OFF  valve closed",
+                            flush=True,
+                        )
+                    prev_eff, prev_samp = eff, samp
                 self._hud(
                     instruction,
                     eff,
                     samp,
                     len(recorder),
                     success_hold_count=task_completion_hold_count,
+                    hold_left=self._hold_left,
+                    control_freq=float(self.env.control_freq),
                 )
 
                 task_completion_hold_count, end_on_success = self._update_success_hold(
@@ -635,22 +655,45 @@ class TeleopSession:
 
     @staticmethod
     def _controls_help() -> str:
+        from odor_sim.bridge._enose_keys import KEY_FILTER, KEY_IDLE, KEY_SAMPLE
+
         return (
             "\n=== OdorSim teleop ===\n"
             "  arm/gripper: standard robosuite keyboard controls\n"
-            "  e-nose:  1 = sample (auto-hold ~7 s)   0 = idle   2 = filter/purge\n"
+            f"  e-nose:  {KEY_SAMPLE} = sample/sniff (auto-hold ~7 s)\n"
+            f"           {KEY_IDLE} = idle (valve closed)\n"
+            f"           {KEY_FILTER} = filter/purge\n"
+            "  HUD line shows enose state + hold countdown while sniffing\n"
             "  end episode: the device reset key (Ctrl+Q on keyboard)\n"
             "  sustained task success auto-ends the episode (collect-style)\n"
         )
 
     @staticmethod
-    def _hud(instruction, enose_state, sampling, step_i, success_hold_count=-1):
+    def _hud(
+        instruction,
+        enose_state,
+        sampling,
+        step_i,
+        success_hold_count=-1,
+        hold_left=0,
+        control_freq=20.0,
+    ):
         token = {SAMPLE: "SAMPLE", IDLE: "idle", FILTER: "FILTER"}.get(enose_state, "?")
-        tag = " [SNIFF]" if sampling else ""
+        if sampling and hold_left > 0 and control_freq > 0:
+            hold_s = hold_left / float(control_freq)
+            tag = f" [SNIFFING hold={hold_s:.1f}s left]"
+        elif sampling:
+            tag = " [SNIFFING]"
+        else:
+            tag = " [valve closed]" if enose_state in (IDLE, FILTER) else ""
         success_tag = ""
         if success_hold_count > 0:
             success_tag = f"  [SUCCESS {success_hold_count}]"
-        print(f"\r[{step_i:5d}] enose={token}{tag}{success_tag}  | {instruction}", end="", flush=True)
+        print(
+            f"\r[{step_i:5d}] enose={token}{tag}{success_tag}  | {instruction}   ",
+            end="",
+            flush=True,
+        )
 
     @staticmethod
     def _ask_continue() -> bool:
