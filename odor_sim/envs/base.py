@@ -191,29 +191,27 @@ class OdorManipulationEnv(ManipulationEnv):
         )
 
     def _build_placement_initializer(self) -> SequentialCompositeSampler:
-        """One sub-sampler per object, honoring each object's rotation metadata.
+        """One sub-sampler per object over a 0.6 m x 0.6 m table region.
 
-        Objects are spread along y so multiple objects do not start overlapping;
-        a single object keeps the historical centered jitter box. Each object's
-        ``rotation`` / ``rotation_axis`` (e.g. to stand a mesh upright) are
-        forwarded to its sub-sampler.
+        Each object is placed uniformly in x/y within ±0.3 m of the table
+        center. ``ensure_valid_placement`` rejects overlaps when multiple
+        objects are spawned. Each object's ``rotation`` / ``rotation_axis``
+        (e.g. to stand a mesh upright) are forwarded to its sub-sampler.
         """
-        n = len(self.odor_objects)
-        if n == 1:
-            y_centers = [0.0]
-        else:
-            y_centers = list(np.linspace(-0.15, 0.15, n))
+        half = 0.30  # 0.6 m x 0.6 m spawn box, centered on the table
+        x_range = [-half, half]
+        y_range = [-half, half]
 
         sampler = SequentialCompositeSampler(name="OdorObjectSampler")
-        for obj, y_center in zip(self.odor_objects, y_centers):
+        for obj in self.odor_objects:
             rotation = getattr(obj, "rotation", None)
             rotation_axis = getattr(obj, "rotation_axis", "z") or "z"
             sampler.append_sampler(
                 UniformRandomSampler(
                     name=f"{obj.object_id}_sampler",
                     mujoco_objects=obj,
-                    x_range=[-0.05, 0.05],
-                    y_range=[y_center - 0.05, y_center + 0.05],
+                    x_range=x_range,
+                    y_range=y_range,
                     rotation=rotation,
                     rotation_axis=rotation_axis,
                     ensure_object_boundary_in_range=False,

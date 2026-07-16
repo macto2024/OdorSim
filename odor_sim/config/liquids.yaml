@@ -1,0 +1,43 @@
+# Liquid catalog for the ClassifyLiquid task.
+#
+# ClassifyLiquid decouples SMELL from LOOK: the policy classifies the liquid by
+# its odor, while the *container* is a cup mesh chosen at random every episode.
+# So a liquid here binds only to a VOC recipe (see voc_recipes.yaml); the visual
+# comes from the shared `cups` pool below, sampled per episode with the env RNG.
+#
+# cups: pool of interchangeable cup meshes. Each entry is a self-contained
+#   robosuite object XML (same convention as objects.yaml `xml` geometry) plus
+#   optional placement metadata:
+#     path          - path to the cup .xml (relative to repo root or absolute)
+#     rotation      - null (uniform), scalar (fixed radians), or [low, high]
+#     rotation_axis - x / y / z (the turbosquid mugs are modeled lying down, so
+#                     an upright pose needs a fixed rotation about x, matching
+#                     porcelain_mug's entry in objects.yaml)
+#
+# liquids: name -> {recipe}. recipe is a dedicated VOC recipe in voc_recipes.yaml
+#   (conventionally liquid_<name>). water is the odorless control.
+
+cups:
+  - path: odor_sim/assets/objects/porcelain_mug/porcelain_mug.xml
+    rotation: [0, 0]
+    rotation_axis: x
+  - path: odor_sim/assets/objects/white_yellow_mug/white_yellow_mug.xml
+    rotation: [0, 0]
+    rotation_axis: x
+  - path: odor_sim/assets/objects/red_coffee_mug/red_coffee_mug.xml
+    rotation: [0, 0]
+    rotation_axis: x
+
+liquids:
+  water:
+    recipe: liquid_water
+  coconut_water:
+    recipe: liquid_coconut_water
+  alcohol:
+    recipe: liquid_alcohol
+  coke:
+    recipe: liquid_coke
+  grape_juice:
+    recipe: liquid_grape_juice
+  wine:
+    recipe: liquid_wine

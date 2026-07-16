@@ -73,6 +73,11 @@ def _default_scene_id(env: str, objects=None) -> str:
     return re.sub(r"[^0-9A-Za-z_]+", "_", raw).strip("_").lower()
 
 
+def _scene_id_names(env_kwargs: dict):
+    """Names to fold into the default scene id: object catalog or liquid names."""
+    return env_kwargs.get("objects") or env_kwargs.get("liquids")
+
+
 def _ensure_writable_ros_log_dir() -> None:
     """Point ``ROS_LOG_DIR`` at a writable dir if the default is not.
 
@@ -151,7 +156,7 @@ def make(
     """
     get_task_spec(env)  # validate task name early
     config_dir = resolve_scenario(scenario, scenario_config)
-    scene_id = scene_id or _default_scene_id(env, env_kwargs.get("objects"))
+    scene_id = scene_id or _default_scene_id(env, _scene_id_names(env_kwargs))
 
     inner_env = make_env(
         env,

@@ -33,6 +33,13 @@ so a single command is enough (no separate server terminal)::
 
     python -m odor_sim.bridge.teleop --env OdorLift --objects milk --robots Panda \\
         --camera agentview --device keyboard --odor-monitor
+
+For the ClassifyLiquid task, choose liquids instead of objects; each liquid is
+shown in a randomly chosen cup every episode (the odor, not the cup, is the
+class)::
+
+    python -m odor_sim.bridge.teleop --env ClassifyLiquid \\
+        --liquids water coke wine --target-liquid coke --robots Panda
 """
 
 from __future__ import annotations
@@ -266,6 +273,8 @@ class TeleopSession:
         env: str = "OdorLift",
         objects=None,
         target_object: str | None = None,
+        liquids=None,
+        target_liquid: str | None = None,
         scenario: str = DEFAULT_SCENARIO,
         sample_hold_s: float = 7.0,
         filter_hold_s: float = 10.0,
@@ -327,11 +336,16 @@ class TeleopSession:
         else:
             cam_kwargs = {"has_offscreen_renderer": False, "use_camera_obs": False}
 
-        # Only forward ``objects``/``target_object`` when set, so non-catalog
-        # envs are unaffected.
+        # Only forward ``objects``/``target_object`` (catalog tasks like
+        # OdorLift) or ``liquids``/``target_liquid`` (ClassifyLiquid) when set,
+        # so each env only receives the kwargs it understands.
         object_kwargs = {"objects": list(objects)} if objects else {}
         if target_object:
             object_kwargs["target_object"] = target_object
+        if liquids:
+            object_kwargs["liquids"] = list(liquids)
+        if target_liquid:
+            object_kwargs["target_liquid"] = target_liquid
 
         self.cosim = odorsim.make(
             env,
@@ -795,6 +809,27 @@ def main(argv=None) -> int:
             "default: the first object."
         ),
     )
+    parser.add_argument(
+        "--liquids",
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help=(
+            "ClassifyLiquid only: liquid name(s) to spawn (see "
+            "odor_sim/config/liquids.yaml); each is shown in a random cup every "
+            "episode. First is the lift target unless --target-liquid is given, "
+            "extras are odor distractors."
+        ),
+    )
+    parser.add_argument(
+        "--target-liquid",
+        default=None,
+        metavar="NAME",
+        help=(
+            "ClassifyLiquid only: which spawned liquid is the lift target (must "
+            "be one of --liquids); default: the first liquid."
+        ),
+    )
     parser.add_argument("--scenario", default=DEFAULT_SCENARIO, help="GADEN scenario name or config-dir path")
     parser.add_argument("--device", default="keyboard", choices=["keyboard", "spacemouse"])
     parser.add_argument(
@@ -874,6 +909,8 @@ def main(argv=None) -> int:
         env=args.env,
         objects=args.objects,
         target_object=args.target_object,
+        liquids=args.liquids,
+        target_liquid=args.target_liquid,
         scenario=args.scenario,
         sample_hold_s=args.sample_hold_s,
         filter_hold_s=args.filter_hold_s,

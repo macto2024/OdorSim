@@ -88,3 +88,66 @@ recipes:
     - {gas_type: chlorine, strength: 0.0}
     - {gas_type: fluorine, strength: 0.0}
     - {gas_type: acetone,  strength: 0.2}
+
+  # ------------------------------------------------------------------------
+  # Liquid recipes for the ClassifyLiquid task (odor_sim/config/liquids.yaml).
+  #
+  # In ClassifyLiquid the *smell* is the liquid and the *look* is a randomly
+  # chosen cup mesh, so these recipes are what the policy must classify. Same
+  # fixed MOX panel order as the obj_* recipes above (ethanol, methane,
+  # hydrogen, propanol, chlorine, fluorine, acetone) so the recorded ppm vector
+  # layout is stable across liquids. water is the odorless control (all inert).
+  # ------------------------------------------------------------------------
+  liquid_water:
+    - {gas_type: ethanol,  strength: 0.0}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.0}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.0}
+
+  liquid_coconut_water:
+    - {gas_type: ethanol,  strength: 0.25}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.1}
+    - {gas_type: propanol, strength: 0.1}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.15}
+
+  liquid_alcohol:
+    - {gas_type: ethanol,  strength: 1.0}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.3}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.1}
+
+  liquid_coke:
+    - {gas_type: ethanol,  strength: 0.3}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.0}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.6, local_offset: [0.0, 0.0, 0.02]}
+
+  liquid_grape_juice:
+    - {gas_type: ethanol,  strength: 0.5}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.2}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.3}
+
+  liquid_wine:
+    - {gas_type: ethanol,  strength: 0.9}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.1}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.25}

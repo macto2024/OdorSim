@@ -25,6 +25,12 @@ def _odor_lift():
     return OdorLift
 
 
+def _classify_liquid():
+    from odor_sim.envs.classify_liquid import ClassifyLiquid
+
+    return ClassifyLiquid
+
+
 # string -> {factory, defaults}. ``cls`` is a zero-arg callable returning the
 # env class (lazy import); ``defaults`` are merged under explicit make() kwargs.
 # Objects carry their own dedicated recipes, so there is no default_recipe.
@@ -32,6 +38,10 @@ REGISTERED_TASKS: dict[str, dict] = {
     "OdorLift": {
         "cls": _odor_lift,
         "default_instruction": None,  # env generates one from the object name
+    },
+    "ClassifyLiquid": {
+        "cls": _classify_liquid,
+        "default_instruction": None,  # env generates one from the target liquid
     },
 }
 
