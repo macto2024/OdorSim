@@ -40,6 +40,12 @@ class)::
 
     python -m odor_sim.bridge.teleop --env ClassifyLiquid \\
         --liquids water coke wine --target-liquid coke --robots Panda
+
+ClassifyLiquidPlace is the same liquid/cup setup, but success is placing the
+target liquid's cup on a catalog place target (default plate)::
+
+    python -m odor_sim.bridge.teleop --env ClassifyLiquidPlace \\
+        --liquids water coke wine --target-liquid coke --place-target plate
 """
 
 from __future__ import annotations
@@ -275,6 +281,7 @@ class TeleopSession:
         target_object: str | None = None,
         liquids=None,
         target_liquid: str | None = None,
+        place_target: str | None = None,
         scenario: str = DEFAULT_SCENARIO,
         sample_hold_s: float = 7.0,
         filter_hold_s: float = 10.0,
@@ -337,8 +344,9 @@ class TeleopSession:
             cam_kwargs = {"has_offscreen_renderer": False, "use_camera_obs": False}
 
         # Only forward ``objects``/``target_object`` (catalog tasks like
-        # OdorLift) or ``liquids``/``target_liquid`` (ClassifyLiquid) when set,
-        # so each env only receives the kwargs it understands.
+        # OdorLift), ``liquids``/``target_liquid`` (ClassifyLiquid*), or
+        # ``place_target`` (ClassifyLiquidPlace) when set, so each env only
+        # receives the kwargs it understands.
         object_kwargs = {"objects": list(objects)} if objects else {}
         if target_object:
             object_kwargs["target_object"] = target_object
@@ -346,6 +354,8 @@ class TeleopSession:
             object_kwargs["liquids"] = list(liquids)
         if target_liquid:
             object_kwargs["target_liquid"] = target_liquid
+        if place_target:
+            object_kwargs["place_target"] = place_target
 
         self.cosim = odorsim.make(
             env,
@@ -815,9 +825,9 @@ def main(argv=None) -> int:
         default=None,
         metavar="NAME",
         help=(
-            "ClassifyLiquid only: liquid name(s) to spawn (see "
+            "ClassifyLiquid / ClassifyLiquidPlace: liquid name(s) to spawn (see "
             "odor_sim/config/liquids.yaml); each is shown in a random cup every "
-            "episode. First is the lift target unless --target-liquid is given, "
+            "episode. First is the target unless --target-liquid is given, "
             "extras are odor distractors."
         ),
     )
@@ -826,8 +836,17 @@ def main(argv=None) -> int:
         default=None,
         metavar="NAME",
         help=(
-            "ClassifyLiquid only: which spawned liquid is the lift target (must "
-            "be one of --liquids); default: the first liquid."
+            "ClassifyLiquid / ClassifyLiquidPlace: which spawned liquid is the "
+            "task target (must be one of --liquids); default: the first liquid."
+        ),
+    )
+    parser.add_argument(
+        "--place-target",
+        default=None,
+        metavar="NAME",
+        help=(
+            "ClassifyLiquidPlace only: catalog object to put the target liquid "
+            "on (see odor_sim/config/objects.yaml); default: plate."
         ),
     )
     parser.add_argument("--scenario", default=DEFAULT_SCENARIO, help="GADEN scenario name or config-dir path")
@@ -911,6 +930,7 @@ def main(argv=None) -> int:
         target_object=args.target_object,
         liquids=args.liquids,
         target_liquid=args.target_liquid,
+        place_target=args.place_target,
         scenario=args.scenario,
         sample_hold_s=args.sample_hold_s,
         filter_hold_s=args.filter_hold_s,

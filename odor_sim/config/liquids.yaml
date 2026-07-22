@@ -41,3 +41,46 @@ liquids:
     recipe: liquid_grape_juice
   wine:
     recipe: liquid_wine
+  # Pure single-VOC classes (all 7 MOX gases × 0.3 / 0.7 / 1.0)
+  ethanol0.3:
+    recipe: liquid_ethanol0.3
+  ethanol0.7:
+    recipe: liquid_ethanol0.7
+  ethanol1.0:
+    recipe: liquid_ethanol1.0
+  methane0.3:
+    recipe: liquid_methane0.3
+  methane0.7:
+    recipe: liquid_methane0.7
+  methane1.0:
+    recipe: liquid_methane1.0
+  hydrogen0.3:
+    recipe: liquid_hydrogen0.3
+  hydrogen0.7:
+    recipe: liquid_hydrogen0.7
+  hydrogen1.0:
+    recipe: liquid_hydrogen1.0
+  propanol0.3:
+    recipe: liquid_propanol0.3
+  propanol0.7:
+    recipe: liquid_propanol0.7
+  propanol1.0:
+    recipe: liquid_propanol1.0
+  chlorine0.3:
+    recipe: liquid_chlorine0.3
+  chlorine0.7:
+    recipe: liquid_chlorine0.7
+  chlorine1.0:
+    recipe: liquid_chlorine1.0
+  fluorine0.3:
+    recipe: liquid_fluorine0.3
+  fluorine0.7:
+    recipe: liquid_fluorine0.7
+  fluorine1.0:
+    recipe: liquid_fluorine1.0
+  acetone0.3:
+    recipe: liquid_acetone0.3
+  acetone0.7:
+    recipe: liquid_acetone0.7
+  acetone1.0:
+    recipe: liquid_acetone1.0

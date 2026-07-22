@@ -74,8 +74,13 @@ def _default_scene_id(env: str, objects=None) -> str:
 
 
 def _scene_id_names(env_kwargs: dict):
-    """Names to fold into the default scene id: object catalog or liquid names."""
-    return env_kwargs.get("objects") or env_kwargs.get("liquids")
+    """Names to fold into the default scene id: objects/liquids (+ place_target)."""
+    names = env_kwargs.get("objects") or env_kwargs.get("liquids")
+    place = env_kwargs.get("place_target")
+    if not place:
+        return names
+    base = [] if names is None else ([names] if isinstance(names, str) else list(names))
+    return base + [place]
 
 
 def _ensure_writable_ros_log_dir() -> None:

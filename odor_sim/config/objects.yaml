@@ -69,3 +69,13 @@ objects:
       type: xml
       path: odor_sim/assets/objects/wine_bottle/wine_bottle.xml
     recipe: obj_wine_bottle
+
+  # Plate mesh (LIBERO google-scanned); odorless place target for place tasks.
+  # Modeled lying down -> stand upright with a fixed x rotation (LIBERO Plate).
+  plate:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/plate/plate.xml
+    recipe: obj_plate
+    rotation: [0, 0]
+    rotation_axis: x

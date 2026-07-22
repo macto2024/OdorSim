@@ -89,6 +89,16 @@ recipes:
     - {gas_type: fluorine, strength: 0.0}
     - {gas_type: acetone,  strength: 0.2}
 
+  # Inert place-target fixture (no smell class; all strength 0).
+  obj_plate:
+    - {gas_type: ethanol,  strength: 0.0}
+    - {gas_type: methane,  strength: 0.0}
+    - {gas_type: hydrogen, strength: 0.0}
+    - {gas_type: propanol, strength: 0.0}
+    - {gas_type: chlorine, strength: 0.0}
+    - {gas_type: fluorine, strength: 0.0}
+    - {gas_type: acetone,  strength: 0.0}
+
   # ------------------------------------------------------------------------
   # Liquid recipes for the ClassifyLiquid task (odor_sim/config/liquids.yaml).
   #

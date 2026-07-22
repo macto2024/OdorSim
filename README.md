@@ -137,6 +137,7 @@ Available tasks:
 
 - `OdorLift`: Lift-style manipulation task. Spawns one or more catalog objects; you choose which one is the lift target (default: the first). Extra objects are odor-emitting distractors. Success is when the target rises ~4 cm above its resting height.
 - `ClassifyLiquid`: Same lift success condition, but you choose **liquids** (odor classes) instead of objects. Each liquid is shown in a randomly chosen cup mesh every episode (`porcelain_mug`, `white_yellow_mug`, or `red_coffee_mug`), so appearance is decorrelated from the smell the policy must classify. Available liquids: `water` (odorless control), `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine`, plus pure single-VOC classes for every MOX gas at strengths 0.3 / 0.7 / 1.0 (`ethanol0.3`, `methane1.0`, `hydrogen0.7`, `propanol0.3`, `chlorine1.0`, `fluorine0.7`, `acetone0.3`, … — see `odor_sim/config/liquids.yaml`).
+- `ClassifyLiquidPlace`: Same liquid/cup setup as `ClassifyLiquid`, but success is placing the target liquid's cup **on** a catalog place target (default `plate`) — contact, cup above the surface, and XY centers within ~3 cm (LIBERO-style `On`). The place target is odorless so smell classification stays on the liquids.
 
 ```python
 # Pick the lift target explicitly (need not be first)
@@ -150,14 +151,24 @@ with odorsim.make(
     target_liquid="coke",
 ) as cosim:
     ...
+
+# ClassifyLiquidPlace: put the target liquid's cup on a plate
+with odorsim.make(
+    "ClassifyLiquidPlace",
+    liquids=["water", "coke", "wine"],
+    target_liquid="coke",
+    place_target="plate",
+) as cosim:
+    ...
 ```
 
 Useful `odor_sim.make(...)` options:
 
 - `objects=["mango"]`: choose catalog object(s) to spawn (`OdorLift`).
 - `target_object="mango"`: which spawned object is the lift target (default: first in `objects`).
-- `liquids=["coke", "wine"]`: choose liquid name(s) to spawn (`ClassifyLiquid`); each gets a random cup.
-- `target_liquid="coke"`: which spawned liquid is the lift target (default: first in `liquids`).
+- `liquids=["coke", "wine"]`: choose liquid name(s) to spawn (`ClassifyLiquid` / `ClassifyLiquidPlace`); each gets a random cup.
+- `target_liquid="coke"`: which spawned liquid is the task target (default: first in `liquids`).
+- `place_target="plate"`: catalog object to put the target liquid on (`ClassifyLiquidPlace`).
 - `scenario="10x6_uniform"`: choose a scenario under `scenarios/`, or pass a direct config directory.
 - `scenario_config="config1"`: choose the config under `environment_configurations/`.
 - `scene_id=None`: override the generated scene name.
@@ -245,6 +256,20 @@ Pure single-VOC classes at fixed strengths also work for every MOX gas (`ethanol
 
 Liquid names come from `odor_sim/config/liquids.yaml` (`water`, `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine`, plus the pure-VOC names above). Cup meshes are `porcelain_mug`, `white_yellow_mug`, and `red_coffee_mug`. Objects are placed uniformly in a 0.6 m × 0.6 m region on the table.
 
+### ClassifyLiquidPlace teleop
+
+`ClassifyLiquidPlace` uses the same liquids and random cups as `ClassifyLiquid`, but the goal is to **put the target liquid's cup on a place target** (default `--place-target plate`). The HUD instruction looks like `put the cup of coke on the plate`. Success is an `On` check (cup contacting the plate, above it, and near its center) — not the lift-height check. After `--success-hold-steps` consecutive successful steps (default 10), the episode auto-ends.
+
+```bash
+python -m odor_sim.bridge.teleop \
+  --env ClassifyLiquidPlace \
+  --liquids water coke wine \
+  --target-liquid coke \
+  --place-target plate \
+  --device keyboard \
+  --odor-monitor
+```
+
 **Controls during teleop:**
 
 | Input | Action |
@@ -272,11 +297,12 @@ frames/wrist/
 
 Important teleop options:
 
-- `--env`: task name, default `OdorLift` (also `ClassifyLiquid`).
+- `--env`: task name, default `OdorLift` (also `ClassifyLiquid`, `ClassifyLiquidPlace`).
 - `--objects`: catalog object name(s) to spawn (`OdorLift`); default is the task's own default object (`odor_cube`).
 - `--target-object`: which spawned object is the lift target (must be one of `--objects`); default is the first object.
-- `--liquids`: liquid name(s) to spawn (`ClassifyLiquid`); each is shown in a random cup every episode.
-- `--target-liquid`: which spawned liquid is the lift target (must be one of `--liquids`); default is the first liquid.
+- `--liquids`: liquid name(s) to spawn (`ClassifyLiquid` / `ClassifyLiquidPlace`); each is shown in a random cup every episode.
+- `--target-liquid`: which spawned liquid is the task target (must be one of `--liquids`); default is the first liquid.
+- `--place-target`: catalog object to put the target liquid on (`ClassifyLiquidPlace`); default is `plate`.
 - `--scenario`: scenario name or config directory, default `10x6_uniform`.
 - `--device`: `keyboard` or `spacemouse`, default `keyboard`.
 - `--robots`: robosuite robot name, default `Panda`.

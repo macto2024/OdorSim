@@ -1,11 +1,11 @@
 The mesh object folders in this directory (milk/, porcelain_mug/,
-white_yellow_mug/, red_coffee_mug/, wine_bottle/) are vendored from the LIBERO
-benchmark
+white_yellow_mug/, red_coffee_mug/, wine_bottle/, plate/) are vendored from the
+LIBERO benchmark
 (https://github.com/Lifelong-Robot-Learning/LIBERO), originally under
-libero/libero/assets/{stable_hope_objects,turbosquid_objects}. They are
-self-contained robosuite object XMLs (mesh + texture paths relative to each
-XML) and are redistributed here under LIBERO's MIT license, reproduced below,
-so OdorSim does not need a LIBERO checkout.
+libero/libero/assets/{stable_hope_objects,turbosquid_objects,stable_scanned_objects}.
+They are self-contained robosuite object XMLs (mesh + texture paths relative to
+each XML) and are redistributed here under LIBERO's MIT license, reproduced
+below, so OdorSim does not need a LIBERO checkout.
 
 ----------------------------------------------------------------------
 
