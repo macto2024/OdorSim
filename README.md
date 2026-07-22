@@ -136,7 +136,7 @@ with odorsim.make("OdorLift", objects=["mango"]) as cosim:
 Available tasks:
 
 - `OdorLift`: Lift-style manipulation task. Spawns one or more catalog objects; you choose which one is the lift target (default: the first). Extra objects are odor-emitting distractors. Success is when the target rises ~4 cm above its resting height.
-- `ClassifyLiquid`: Same lift success condition, but you choose **liquids** (odor classes) instead of objects. Each liquid is shown in a randomly chosen cup mesh every episode (`porcelain_mug`, `white_yellow_mug`, or `red_coffee_mug`), so appearance is decorrelated from the smell the policy must classify. Available liquids: `water` (odorless control), `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine` (see `odor_sim/config/liquids.yaml`).
+- `ClassifyLiquid`: Same lift success condition, but you choose **liquids** (odor classes) instead of objects. Each liquid is shown in a randomly chosen cup mesh every episode (`porcelain_mug`, `white_yellow_mug`, or `red_coffee_mug`), so appearance is decorrelated from the smell the policy must classify. Available liquids: `water` (odorless control), `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine`, plus pure single-VOC classes for every MOX gas at strengths 0.3 / 0.7 / 1.0 (`ethanol0.3`, `methane1.0`, `hydrogen0.7`, `propanol0.3`, `chlorine1.0`, `fluorine0.7`, `acetone0.3`, … — see `odor_sim/config/liquids.yaml`).
 
 ```python
 # Pick the lift target explicitly (need not be first)
@@ -241,7 +241,9 @@ python -m odor_sim.bridge.teleop \
   --odor-monitor
 ```
 
-Liquid names come from `odor_sim/config/liquids.yaml` (`water`, `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine`). Cup meshes are `porcelain_mug`, `white_yellow_mug`, and `red_coffee_mug`. Objects are placed uniformly in a 0.6 m × 0.6 m region on the table.
+Pure single-VOC classes at fixed strengths also work for every MOX gas (`ethanol`, `methane`, `hydrogen`, `propanol`, `chlorine`, `fluorine`, `acetone` × `0.3` / `0.7` / `1.0`), e.g. `--liquids ethanol0.3 acetone1.0`.
+
+Liquid names come from `odor_sim/config/liquids.yaml` (`water`, `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine`, plus the pure-VOC names above). Cup meshes are `porcelain_mug`, `white_yellow_mug`, and `red_coffee_mug`. Objects are placed uniformly in a 0.6 m × 0.6 m region on the table.
 
 **Controls during teleop:**
 
