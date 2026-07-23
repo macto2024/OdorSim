@@ -5,8 +5,9 @@ device (keyboard / SpaceMouse) while co-stepping the GADEN plume through the
 :class:`~odor_sim.bridge.gaden_bridge.GadenBridge`. Each control step records
 the robosuite action, the ternary ``enose_state`` token, an auto-hold/sampling
 mask, the ground-truth per-gas ppm at the EE, robot proprio, and the task
-instruction. Episodes are written to disk (raw ppm(t) is stored; voltage is
-synthesized offline in Phase 5).
+instruction. Episodes are written to disk (raw ppm(t) always; live
+``enose_voltage_*`` when the co-sim ``odor_mode`` is continuous/discrete).
+Offline ``odor_sim.recording.synthesize`` remains optional for other MOX models.
 
 Phase 5a extends mining with camera frames (``agentview`` + wrist) and
 structured proprio (joint pos/vel, EE pose, gripper).
@@ -106,8 +107,9 @@ def _validate_robot(robots: str) -> str:
 class EpisodeRecorder:
     """Accumulates per-step records and writes one episode to disk.
 
-    Stores raw ppm(t) (NOT voltage) + state/action/enose token/mask/instruction,
-    matching the Phase 4b/5 "capture a superset, no voltage at mine time" rule.
+    Stores raw ppm(t) + state/action/enose token/mask/instruction. When the
+    session streams live voltage, also stores ``enose_voltage_continuous`` or
+    ``enose_voltage_sampling`` (mode-specific) aligned 1:1 with ppm.
     Phase 5a adds structured proprio (joint pos/vel, EE pose, gripper) and, when
     ``camera_map`` is given, per-step camera frames written as PNG sequences
     under ``frames/<subdir>/``.
@@ -176,6 +178,8 @@ class EpisodeRecorder:
         target_pos,
         proprio: "dict | None" = None,
         frames: "dict | None" = None,
+        enose_voltage: "float | None" = None,
+        enose_voltages: "dict | None" = None,
     ):
         row = {
             "sim_time": float(sim_time),
@@ -189,6 +193,15 @@ class EpisodeRecorder:
             "enose_pos": np.asarray(enose_pos, dtype=np.float32).ravel()[:3],
             "target_pos": np.asarray(target_pos, dtype=np.float32).ravel()[:3],
         }
+        if enose_voltage is not None:
+            row["enose_voltage"] = float(enose_voltage)
+        if enose_voltages:
+            # Preserve model order from meta["mox_models"] when present.
+            model_order = list(self.meta.get("mox_models") or enose_voltages.keys())
+            row["enose_voltages"] = np.asarray(
+                [float(enose_voltages.get(m, 0.0)) for m in model_order],
+                dtype=np.float32,
+            )
         if proprio:
             row["proprio"] = {
                 k: np.asarray(v, dtype=np.float32).ravel() for k, v in proprio.items()
@@ -243,15 +256,41 @@ class EpisodeRecorder:
         }
         proprio = self._stack_proprio()
         arrays.update(proprio)
+        odor_mode = str(self.meta.get("odor_mode") or "none")
+        mox_models = list(self.meta.get("mox_models") or [])
+        if self._rows and "enose_voltage" in self._rows[0]:
+            voltage = np.array([r["enose_voltage"] for r in self._rows], dtype=np.float32)
+            # Mode-specific primary keys match offline synthesize / LeRobot convert.
+            if odor_mode == "discrete":
+                arrays["enose_voltage_sampling"] = voltage
+            else:
+                arrays["enose_voltage_continuous"] = voltage
+            arrays["enose_voltage"] = voltage
+        if self._rows and "enose_voltages" in self._rows[0]:
+            multi = np.stack([r["enose_voltages"] for r in self._rows]).astype(np.float32)
+            arrays["enose_voltages"] = multi  # (T, n_models)
+            # Also write per-model 1-D streams for easy offline inspection.
+            if mox_models and multi.ndim == 2 and multi.shape[1] == len(mox_models):
+                suffix = "sampling" if odor_mode == "discrete" else "continuous"
+                for i, name in enumerate(mox_models):
+                    arrays[f"enose_voltage_{suffix}_{name}"] = multi[:, i]
         np.savez(ep_dir / "episode.npz", **arrays)
 
         class_names = list(self.meta.get("objects") or [])
+        if "enose_voltage" in arrays:
+            models_note = ",".join(mox_models) if mox_models else "primary"
+            note = (
+                f"raw ppm(t) + live {odor_mode} voltage stored "
+                f"({models_note}); offline synthesize still optional"
+            )
+        else:
+            note = "raw ppm(t) stored; voltage synthesized offline (Phase 5b)"
         meta = {
             "instruction": self.instruction,
             "gas_types": self.gas_types,
             "num_steps": t_count,
             "success": bool(success),
-            "note": "raw ppm(t) stored; voltage synthesized offline (Phase 5b)",
+            "note": note,
             "proprio_keys": sorted(proprio.keys()),
             "source_identity_index": self.target_index,
             "class_names": class_names,
@@ -290,6 +329,7 @@ class TeleopSession:
         has_renderer: bool = False,
         control_freq: int = 20,
         odor_monitor=False,
+        sensor_monitor=False,
         robots: str = "Panda",
         controller: str | None = None,
         render_camera: str = "agentview",
@@ -300,15 +340,26 @@ class TeleopSession:
         record_frames: bool = False,
         camera_size: int = 256,
         mining_cameras=MINING_CAMERAS,
+        odor_mode: str = "none",
+        mox_model=None,
+        load_resistance: float | None = None,
+        vcc: float = 5.0,
     ):
         import odor_sim as odorsim
         from robosuite.controllers import load_composite_controller_config
+        from odor_sim.runtime.session import resolve_mox_models
 
         robots = _validate_robot(robots)
         if goal_update_mode not in ("target", "achieved"):
             raise ValueError(f"goal_update_mode must be 'target' or 'achieved', got {goal_update_mode!r}")
         if success_hold_steps < 0:
             raise ValueError(f"success_hold_steps must be >= 0, got {success_hold_steps}")
+        odor_mode = str(odor_mode or "none").strip().lower()
+        if odor_mode not in ("none", "continuous", "discrete"):
+            raise ValueError(
+                f"odor_mode must be 'none', 'continuous', or 'discrete', got {odor_mode!r}"
+            )
+        mox_models = resolve_mox_models(mox_model)
 
         self.robots = robots
         self.goal_update_mode = goal_update_mode
@@ -323,6 +374,9 @@ class TeleopSession:
         self.record_frames = bool(record_frames)
         self.mining_cameras = list(mining_cameras)
         self.camera_size = int(camera_size)
+        self.odor_mode = odor_mode
+        self.mox_models = mox_models
+        self.mox_model = mox_models[0]  # display / primary hint; session picks TGS2620
         self.camera_map = (
             {f"{c}_image": _camera_dirname(c) for c in self.mining_cameras}
             if self.record_frames
@@ -363,6 +417,11 @@ class TeleopSession:
             auto_start_gaden=use_bridge,
             bridge=use_bridge,
             odor_monitor=odor_monitor if use_bridge else False,
+            sensor_monitor=sensor_monitor,
+            odor_mode=odor_mode,
+            mox_model=mox_models,
+            load_resistance=load_resistance,
+            vcc=vcc,
             enose_site_offset=(0.0, 0.0, -0.02),
             robots=robots,
             controller_configs=controller_config,
@@ -486,19 +545,25 @@ class TeleopSession:
             env_action, enose_state, gripper_dof, forced=enose_forced
         )
 
-        # Match OdorCosimSession.step() order: advance physics first, then step
-        # GADEN and query ppm at the post-step EE pose.
-        obs, reward, done, info = self.env.step(env_action)
-
-        if self.bridge is not None:
-            rec = self.bridge.step_env(self.env)
-            sim_time, ppm = rec["sim_time"], rec["ppm"]
-            enose_pos = rec["ee_pos_world"]
-            if self.cosim.odor_monitor is not None:
-                self.cosim.odor_monitor.record(sim_time, ppm)
+        # Drive physics + GADEN + live MOX through OdorCosimSession so
+        # info["enose_voltage"] matches eval / offline ContinuousEnose /
+        # SamplingEnose when odor_mode is set.
+        if self.cosim.odor_mode == "discrete":
+            step_action = np.concatenate(
+                [np.asarray(env_action, dtype=float).ravel(), [float(eff_enose)]]
+            )
         else:
-            sim_time, ppm = 0.0, {}
-            enose_pos = self.env.get_enose_site_pose()[0]
+            step_action = np.asarray(env_action, dtype=float).ravel()
+
+        obs, reward, done, info = self.cosim.step(step_action)
+
+        ppm = info.get("ppm") or {}
+        sim_time = float(info.get("sim_time", 0.0))
+        enose_pos = self.env.get_enose_site_pose()[0]
+
+        # Prefer session sampling_active when discrete (sensor valve); else teleop hold mask.
+        if self.cosim.odor_mode == "discrete" and "sampling_active" in info:
+            sampling = bool(info["sampling_active"])
 
         target_name = self.env.target_object_name
         target_pos = self.env.get_object_world_poses()[target_name][0]
@@ -506,10 +571,12 @@ class TeleopSession:
             np.linalg.norm(np.asarray(enose_pos, dtype=float) - np.asarray(target_pos, dtype=float))
         )
 
+        enose_voltage = info.get("enose_voltage")
+        enose_voltages = info.get("enose_voltages")
         recorder.add(
             sim_time=sim_time,
             state=self._proprio_state(obs),
-            action=np.concatenate([env_action, [eff_enose]]),
+            action=np.concatenate([np.asarray(env_action, dtype=float).ravel(), [eff_enose]]),
             enose_state=eff_enose,
             sampling_active=sampling,
             ppm=ppm,
@@ -518,6 +585,8 @@ class TeleopSession:
             target_pos=target_pos,
             proprio=self._structured_proprio(obs),
             frames=self._extract_frames(obs) if self.camera_map else None,
+            enose_voltage=enose_voltage,
+            enose_voltages=enose_voltages,
         )
         return obs, reward, done, info, eff_enose, sampling
 
@@ -557,6 +626,10 @@ class TeleopSession:
             "controller_type": self.controller_type,
             "scenario": self.scenario,
             "scene_id": self.scene_id,
+            "odor_mode": self.odor_mode,
+            "mox_models": list(self.cosim.mox_models),
+            "mox_model": self.cosim.mox_model,  # primary
+            "vcc": float(self.cosim.vcc),
         }
         return EpisodeRecorder(
             self.out_dir,
@@ -584,8 +657,11 @@ class TeleopSession:
         recorder = self._new_recorder(instruction)
         self.env.reset()
         self._reset_gaden()
+        self.cosim.reset_enose()
         if self.cosim.odor_monitor is not None:
             self.cosim.odor_monitor.reset()
+        if self.cosim.sensor_monitor is not None:
+            self.cosim.sensor_monitor.reset()
         gripper_dof = self._gripper_dof()
 
         for a, e in zip(arm_actions, enose_schedule):
@@ -609,20 +685,24 @@ class TeleopSession:
 
         if not self._vis_wrapped:
             self.env = VisualizationWrapper(self.env)
+            self.cosim.env = self.env
             self._vis_wrapped = True
 
         device, enose_keys = self._make_device(device_name)
         gripper_dof = self._gripper_dof()
 
         print(self._controls_help())
-        print(f"[teleop] robot={self.robots}")
+        print(f"[teleop] robot={self.robots} odor_mode={self.odor_mode} mox={list(self.cosim.mox_models)}")
         while True:
             instruction = self.env.instruction
             recorder = self._new_recorder(instruction)
             self.env.reset()
             self._reset_gaden()
+            self.cosim.reset_enose()
             if self.cosim.odor_monitor is not None:
                 self.cosim.odor_monitor.reset()
+            if self.cosim.sensor_monitor is not None:
+                self.cosim.sensor_monitor.reset()
             self.env.render()
             device.start_control()
             self._cancel_enose_sequence()
@@ -911,6 +991,28 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--no-bridge", action="store_true", help="drive arm only, no GADEN/ppm")
     parser.add_argument(
+        "--odor-mode",
+        default="none",
+        choices=["none", "continuous", "discrete"],
+        help="live MOX voltage: none (ppm only), continuous (always-on), "
+        "discrete (valve-gated by e-nose keys). Default none for back-compat",
+    )
+    parser.add_argument(
+        "--mox-model",
+        nargs="*",
+        default=None,
+        metavar="MODEL",
+        help="MOX model(s) for live voltage. Omit = all five "
+        "(TGS2620 TGS2600 TGS2611 TGS2610 TGS2612). "
+        "Example: --mox-model TGS2620 TGS2600",
+    )
+    parser.add_argument(
+        "--vcc",
+        type=float,
+        default=5.0,
+        help="MOX voltage-divider supply (V)",
+    )
+    parser.add_argument(
         "--odor-monitor",
         nargs="?",
         const=True,
@@ -918,11 +1020,23 @@ def main(argv=None) -> int:
         metavar="MODE",
         help="live ppm log/plot: default log+plot; MODE=log or plot for one only",
     )
+    parser.add_argument(
+        "--sensor-monitor",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="MODE",
+        help="live MOX voltage log/plot (needs --odor-mode continuous|discrete): "
+        "default log+plot; MODE=log or plot for one only",
+    )
     args = parser.parse_args(argv)
 
     odor_monitor = False
     if args.odor_monitor is not False:
         odor_monitor = args.odor_monitor if args.odor_monitor is not True else True
+    sensor_monitor = False
+    if args.sensor_monitor is not False:
+        sensor_monitor = args.sensor_monitor if args.sensor_monitor is not True else True
 
     session = TeleopSession(
         env=args.env,
@@ -938,6 +1052,7 @@ def main(argv=None) -> int:
         out_dir=args.out_dir,
         has_renderer=True,
         odor_monitor=odor_monitor,
+        sensor_monitor=sensor_monitor,
         robots=args.robots,
         controller=args.controller,
         render_camera=args.camera,
@@ -947,6 +1062,9 @@ def main(argv=None) -> int:
         success_hold_steps=args.success_hold_steps,
         record_frames=not args.no_frames,
         camera_size=args.camera_size,
+        odor_mode=args.odor_mode,
+        mox_model=args.mox_model,
+        vcc=args.vcc,
     )
     try:
         session.run_interactive(device_name=args.device)

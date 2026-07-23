@@ -14,7 +14,8 @@ Feature mapping:
   * ``action``                    <- recorded ``action`` (robosuite + enose dim)
   * ``observation.ppm``           <- raw per-gas ppm at the EE
   * ``observation.enose_state``   <- ternary sampling token
-  * ``observation.enose_voltage_continuous`` / ``...sampling`` <- Phase 5b
+  * ``observation.enose_voltage_continuous`` / ``...sampling`` <- live
+                                     ``episode.npz`` keys and/or Phase 5b
                                      ``features.npz`` (only if present)
   * ``observation.source_identity`` / ``observation.source_distance``
                                      <- ground-truth odor labels (episode.npz
@@ -104,7 +105,20 @@ def _build_features(sample: dict, cameras: dict, use_videos: bool) -> dict:
     }
     if sample["has_voltage"]:
         for name in ("enose_voltage_continuous", "enose_voltage_sampling"):
-            features[f"observation.{name}"] = {"dtype": "float32", "shape": [1], "names": [name]}
+            if name in sample["voltage"]:
+                features[f"observation.{name}"] = {
+                    "dtype": "float32",
+                    "shape": [1],
+                    "names": [name],
+                }
+    if sample.get("enose_voltages") is not None:
+        n = int(sample["enose_voltages"].shape[1])
+        names = list(sample.get("mox_models") or [f"mox_{i}" for i in range(n)])
+        features["observation.enose_voltages"] = {
+            "dtype": "float32",
+            "shape": [n],
+            "names": names,
+        }
     if sample["source_identity"] is not None:
         features["observation.source_identity"] = {
             "dtype": "float32",
@@ -140,12 +154,35 @@ def _load_episode(ep_dir: Path, cameras_meta: dict):
     gas_types = list(meta.get("gas_types", []))
 
     voltage = {}
+    # Prefer live-mined voltage in episode.npz; fill gaps from features.npz.
+    for name in ("enose_voltage_continuous", "enose_voltage_sampling"):
+        if name in episode.files:
+            voltage[name] = np.asarray(episode[name], dtype=np.float32).reshape(-1, 1)
+    if not voltage and "enose_voltage" in episode.files:
+        odor_mode = str(meta.get("odor_mode") or "none")
+        if odor_mode == "discrete":
+            key = "enose_voltage_sampling"
+        elif odor_mode == "continuous":
+            key = "enose_voltage_continuous"
+        else:
+            key = None
+        if key is not None:
+            voltage[key] = np.asarray(episode["enose_voltage"], dtype=np.float32).reshape(-1, 1)
+
+    # Multi-sensor live array (T, n_models) + per-model columns when present.
+    enose_voltages_multi = None
+    mox_models = list(meta.get("mox_models") or [])
+    if "enose_voltages" in episode.files:
+        enose_voltages_multi = np.asarray(episode["enose_voltages"], dtype=np.float32)
+        if enose_voltages_multi.ndim == 1:
+            enose_voltages_multi = enose_voltages_multi.reshape(-1, 1)
+
     features_path = ep_dir / "features.npz"
     feats = None
     if features_path.is_file():
         feats = np.load(features_path, allow_pickle=True)
         for name in ("enose_voltage_continuous", "enose_voltage_sampling"):
-            if name in feats.files:
+            if name not in voltage and name in feats.files:
                 voltage[name] = np.asarray(feats[name], dtype=np.float32).reshape(-1, 1)
 
     source_identity = None
@@ -171,6 +208,13 @@ def _load_episode(ep_dir: Path, cameras_meta: dict):
         _assert_synced(f"images.{cam}", frames.shape[0], T)
     for name, arr in voltage.items():
         _assert_synced(name, arr.shape[0], T)
+    if enose_voltages_multi is not None:
+        _assert_synced("enose_voltages", enose_voltages_multi.shape[0], T)
+        if mox_models and enose_voltages_multi.shape[1] != len(mox_models):
+            raise ValueError(
+                f"sync check failed: enose_voltages cols "
+                f"{enose_voltages_multi.shape[1]} != len(mox_models)={len(mox_models)}"
+            )
     if source_identity is not None:
         _assert_synced("source_identity", source_identity.shape[0], T)
     if source_distance is not None:
@@ -189,7 +233,9 @@ def _load_episode(ep_dir: Path, cameras_meta: dict):
         "ppm": ppm,
         "enose_state": enose_state,
         "voltage": voltage,
-        "has_voltage": bool(voltage),
+        "has_voltage": bool(voltage) or enose_voltages_multi is not None,
+        "enose_voltages": enose_voltages_multi,
+        "mox_models": mox_models,
         "source_identity": source_identity,
         "source_distance": source_distance,
     }
@@ -285,6 +331,8 @@ def convert_episodes(
                 frame[f"observation.images.{cam}"] = data["images"][cam][t]
             for name, arr in data["voltage"].items():
                 frame[f"observation.{name}"] = arr[t]
+            if data.get("enose_voltages") is not None:
+                frame["observation.enose_voltages"] = data["enose_voltages"][t]
             if data["source_identity"] is not None:
                 frame["observation.source_identity"] = data["source_identity"][t]
             if data["source_distance"] is not None:

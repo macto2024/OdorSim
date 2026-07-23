@@ -39,36 +39,39 @@ Most of the time, use this order:
 ```bash
 source setup/activate.sh
 
-# 1. Run a quick co-sim script
+# 1. Run a quick co-sim script (live continuous voltage, no GADEN)
 python - <<'EOF'
 import odor_sim as odorsim
 
-with odorsim.make("OdorLift", objects=["mango"]) as cosim:
+with odorsim.make(
+    "OdorLift", objects=["mango"], auto_start_gaden=False, odor_mode="continuous"
+) as cosim:
     obs = cosim.reset()
-    print(obs["instruction"])
-    for _ in range(500):
+    print(obs["instruction"], "action_dim=", cosim.action_dim)
+    for _ in range(5):
         obs, reward, done, info = cosim.step(cosim.zero_action())
-    print(info["ppm"])
+    print("ppm", info.get("ppm"))
+    print("enose_voltage", info.get("enose_voltage"))
+    print("enose_voltages", info.get("enose_voltages"))
 EOF
 
-# 2. Collect raw demonstrations
-python -m odor_sim.bridge.teleop --env OdorLift --objects milk --device keyboard --odor-monitor
+# 2. Collect demos with live continuous voltage (or --odor-mode discrete)
+python -m odor_sim.bridge.teleop \
+  --env OdorLift --objects milk --device keyboard \
+  --odor-mode continuous --odor-monitor
 ```
 
-Teleop records **ground-truth ppm** at the end effector plus your **e-nose mode** each step. It does **not** write voltage yet — that comes from synthesis (step 3).
+Teleop always records **ground-truth ppm** and your **e-nose mode** each step. With `--odor-mode continuous` or `discrete`, it also records **live MOX voltage** into `episode.npz` (same sensor model as offline synthesis). Offline synth remains optional if you want the *other* stream or other MOX models without re-mining.
 
-There are two e-nose behaviors, both derived from the same recorded ppm trace:
+Two mutually exclusive live paths (pick one per session):
 
-- **Continuous** — the sensor always sees the plume. Voltage rises and falls as you move through the odor field. No extra keys needed during teleop.
-- **Sniffing (sampling)** — you operate this mode. Press `3` to sniff: the arm auto-holds for ~7 s while sampling, then auto-filters/purges for ~10 s, then returns to idle. Press `4` (idle) or `5` (filter/purge) at any time to cancel the sequence and go there immediately.
+- **Continuous** (`--odor-mode continuous`) — always-on MOX; voltage every step. No e-nose keys required for the live stream.
+- **Discrete / sniffing** (`--odor-mode discrete`) — valve-gated `SamplingEnose`; press `3`/`4`/`5` as before. Live stream is `enose_voltage_sampling`.
 
-During synthesis, these become two different voltage streams in `features.npz`:
-
-- `enose_voltage_continuous` — always-on MOX response
-- `enose_voltage_sampling` — valve-gated response driven by your `3` / `4` / `5` presses during teleop
+You can still synthesize **both** streams offline from ppm:
 
 ```bash
-# 3. Synthesize e-nose voltage features from recorded ppm
+# 3. Optional: synthesize both continuous + sampling voltage for all MOX models
 python -m odor_sim.recording.synthesize datasets/teleop
 
 # 4. Convert raw episodes to LeRobot format
@@ -181,8 +184,14 @@ Useful `odor_sim.make(...)` options:
 - `step_on_timer=False`: advanced; free-runs GADEN instead of bridge lockstep.
 - `publish_markers=False`: enable or disable RViz marker publishing.
 - `odor_monitor=False`: use `True`, `"log"`, or `"plot"` for live ppm monitoring.
+- `sensor_monitor=False`: use `True`, `"log"`, or `"plot"` for live MOX voltage monitoring (requires `odor_mode` continuous/discrete).
+- `odor_mode="none"`: live MOX voltage path — `"none"` (ppm only), `"continuous"` (always-on), or `"discrete"` (valve-gated by trailing `enose_state` on the action). Modes are mutually exclusive.
+- `mox_model=None`: which MOX sensor(s) to stream. Default/`"all"` runs all five in parallel (`TGS2620`, `TGS2600`, `TGS2611`, `TGS2610`, `TGS2612`). Pass a model id, comma list, or Python list to select a subset. `info["enose_voltages"]` has every active reading; `info["enose_voltage"]` is the primary scalar (`TGS2620` when included).
+- `load_resistance=None`: voltage-divider RL [ohms]; default is each model's R0.
+- `vcc=5.0`: divider supply voltage.
 - Any extra robosuite env kwargs, such as `robots="Panda"`, `has_renderer=True`, `control_freq=20`, or `render_camera="agentview"`.
 
+When `odor_mode` is set, each `step` fills `info["enose_voltage"]` / `info["enose_voltages"]` (and for discrete, `info["enose_state"]` / `info["sampling_active"]`). Session `action_dim` is `env.action_dim + 1` in discrete mode.
 For a dry run that builds the env and exports the scene without ROS:
 
 ```python
@@ -199,7 +208,7 @@ with odorsim.make("OdorLift", objects=["mango"], connect_only=True, scene_id="rt
 
 ## Teleoperate And Record Data
 
-Teleop drives an `OdorLift` (or other registered task) with a robosuite device while co-stepping the GADEN plume. Each control step records the arm action, e-nose mode, ground-truth ppm at the end effector, proprio, and the task instruction. Episodes are written as one folder per run under `datasets/teleop/`.
+Teleop drives an `OdorLift` (or other registered task) with a robosuite device while co-stepping the GADEN plume. Each control step records the arm action, e-nose mode, ground-truth ppm at the end effector, proprio, and the task instruction. With `--odor-mode continuous|discrete`, live MOX voltage is recorded too. Episodes are written as one folder per run under `datasets/teleop/`.
 
 ### OdorLift teleop
 
@@ -282,18 +291,19 @@ python -m odor_sim.bridge.teleop \
 
 E-nose keys use `3`/`4`/`5` so they stay clear of contested `0`/`1`/`2`. Durations are `--sample-hold-s` (default 7) and `--filter-hold-s` (default 10). Teleop prints a live HUD with phase countdown and logs each key press plus every state transition.
 
-Continuous odor mode needs no e-nose keys — ppm is always recorded. Sniffing mode only exposes the sensor to the plume while sampling (`3`); synthesis uses the recorded `enose_state` timeline to build the gated voltage stream.
+Continuous odor mode needs no e-nose keys for the live voltage stream — ppm and continuous voltage are always recorded when `--odor-mode continuous`. Discrete mode only exposes the sensor to the plume while sampling (`3`); the live stream is the gated voltage. Offline synthesize can still rebuild both streams from ppm + `enose_state`.
 
 **What gets recorded** (`datasets/teleop/episode_YYYYMMDD_HHMMSS/`):
 
 ```text
 episode.npz          # actions, states, ppm(t), enose_state, proprio
-meta.json            # instruction, objects, target_object, gas_types, success, ...
+                     # + enose_voltage_continuous OR enose_voltage_sampling when --odor-mode set
+meta.json            # instruction, objects, target_object, gas_types, odor_mode, success, ...
 frames/agentview/    # camera PNGs (unless --no-frames)
 frames/wrist/
 ```
 
-`meta.json` includes the catalog `objects` list, the resolved `target_object` name, the natural-language `instruction`, and whether the episode ended in task `success`. Voltage features are **not** written at teleop time — run synthesis afterward (see below).
+`meta.json` includes the catalog `objects` list, the resolved `target_object` name, the natural-language `instruction`, `odor_mode` / `mox_model`, and whether the episode ended in task `success`. Live voltage is written when `--odor-mode` is not `none`; offline synthesize remains optional for the other stream / other sensors.
 
 Important teleop options:
 
@@ -318,13 +328,19 @@ Important teleop options:
 - `--no-frames`: disable camera-frame recording.
 - `--camera-size`: recorded frame size, default `256`.
 - `--no-bridge`: drive robosuite only, without GADEN / ppm.
+- `--odor-mode`: `none` (default, ppm only), `continuous`, or `discrete` live voltage.
+- `--mox-model`: zero or more MOX ids. Omit = all five sensors in parallel. Example: `--mox-model TGS2620 TGS2600`.
+- `--vcc`: divider supply voltage, default `5.0`.
 - `--odor-monitor [MODE]`: live ppm monitor. Use no value for log + plot, or `log` / `plot`.
+- `--sensor-monitor [MODE]`: live MOX voltage monitor (needs `--odor-mode continuous|discrete`). Same MODE shapes as `--odor-monitor`.
 
 ## Convert Data To LeRobot
 
-The data pipeline is two stages: synthesize odor sensor features, then convert to LeRobot.
+The data pipeline can skip synthesis when teleop already wrote live voltage into
+`episode.npz`. Otherwise: synthesize odor sensor features, then convert to LeRobot.
 
-Synthesize e-nose voltage features (writes `features.npz` next to each episode):
+Optional synthesize (writes `features.npz` next to each episode; useful for the
+other stream / other MOX models):
 
 ```bash
 source setup/activate.sh
@@ -405,5 +421,6 @@ datasets/lerobot/odorsim/odorlift/
 - Always start commands from the repo root after `source setup/activate.sh`.
 - Use `--no-frames` for quick teleop debugging, but keep frames enabled for LeRobot conversion.
 - Use `--odor-monitor log` when you only want terminal ppm output.
+- Use `--sensor-monitor log` (with `--odor-mode continuous|discrete`) for terminal MOX voltage output.
 - Use `auto_start_gaden=False` when debugging scene export without launching ROS.
 - Use `connect_only=True` only when you intentionally started `odor_gaden_rt` yourself.

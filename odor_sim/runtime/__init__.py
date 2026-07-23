@@ -8,7 +8,7 @@ object. Both are imported lazily so ROS-free callers need not have ``rclpy`` on
 the path.
 """
 
-__all__ = ["GadenServerManager", "OdorCosimSession", "OdorMonitor"]
+__all__ = ["GadenServerManager", "OdorCosimSession", "OdorMonitor", "SensorMonitor"]
 
 
 def __getattr__(name):
@@ -24,4 +24,8 @@ def __getattr__(name):
         from odor_sim.runtime.odor_monitor import OdorMonitor
 
         return OdorMonitor
+    if name == "SensorMonitor":
+        from odor_sim.runtime.sensor_monitor import SensorMonitor
+
+        return SensorMonitor
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
