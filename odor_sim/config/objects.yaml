@@ -54,13 +54,56 @@ objects:
     rotation: [1.5708, 1.5708]
     rotation_axis: x
 
-  # Porcelain mug mesh.
+  # Porcelain mug mesh (upright x-rotation matches other turbosquid mugs).
   porcelain_mug:
     geometry:
       type: xml
       path: odor_sim/assets/objects/porcelain_mug/porcelain_mug.xml
     recipe: obj_porcelain_mug
-    rotation: [-1.5708, -1.5708]
+    rotation: [0, 0]
+    rotation_axis: x
+
+  # 0.6x porcelain mug — sized for Panda gripper (scripted OdorPlace demos).
+  porcelain_mug_small:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/porcelain_mug_small/porcelain_mug_small.xml
+    recipe: obj_porcelain_mug
+    rotation: [0, 0]
+    rotation_axis: x
+
+  # White/yellow mug mesh (inert; vision-only place tasks).
+  white_yellow_mug:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/white_yellow_mug/white_yellow_mug.xml
+    recipe: obj_white_yellow_mug
+    rotation: [0, 0]
+    rotation_axis: x
+
+  white_yellow_mug_small:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/white_yellow_mug_small/white_yellow_mug_small.xml
+    recipe: obj_white_yellow_mug
+    rotation: [0, 0]
+    rotation_axis: x
+
+  # Red coffee mug mesh (inert; vision-only place tasks).
+  red_coffee_mug:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/red_coffee_mug/red_coffee_mug.xml
+    recipe: obj_red_coffee_mug
+    rotation: [0, 0]
+    rotation_axis: x
+
+  red_coffee_mug_small:
+    geometry:
+      type: xml
+      path: odor_sim/assets/objects/red_coffee_mug_small/red_coffee_mug_small.xml
+    recipe: obj_red_coffee_mug
+    rotation: [0, 0]
     rotation_axis: x
 
   # Wine bottle mesh (a taller container option).

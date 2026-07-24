@@ -61,6 +61,7 @@ class OdorManipulationEnv(ManipulationEnv):
         initialization_noise="default",
         table_full_size=(0.8, 0.8, 0.05),
         table_friction=(1.0, 5e-3, 1e-4),
+        spawn_half: float = 0.30,
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
@@ -99,6 +100,7 @@ class OdorManipulationEnv(ManipulationEnv):
         self.table_full_size = table_full_size
         self.table_friction = table_friction
         self.table_offset = np.array((0, 0, 0.8))
+        self.spawn_half = float(spawn_half)
 
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
@@ -191,14 +193,15 @@ class OdorManipulationEnv(ManipulationEnv):
         )
 
     def _build_placement_initializer(self) -> SequentialCompositeSampler:
-        """One sub-sampler per object over a 0.6 m x 0.6 m table region.
+        """One sub-sampler per object over a centered table spawn region.
 
-        Each object is placed uniformly in x/y within ±0.3 m of the table
-        center. ``ensure_valid_placement`` rejects overlaps when multiple
-        objects are spawned. Each object's ``rotation`` / ``rotation_axis``
-        (e.g. to stand a mesh upright) are forwarded to its sub-sampler.
+        Each object is placed uniformly in x/y within ``±spawn_half`` of the
+        table center (default 0.30 m → 0.6×0.6 m on the 0.8×0.8 m table).
+        ``ensure_valid_placement`` rejects overlaps when multiple objects are
+        spawned. Each object's ``rotation`` / ``rotation_axis`` (e.g. to stand
+        a mesh upright) are forwarded to its sub-sampler.
         """
-        half = 0.30  # 0.6 m x 0.6 m spawn box, centered on the table
+        half = self.spawn_half
         x_range = [-half, half]
         y_range = [-half, half]
 
