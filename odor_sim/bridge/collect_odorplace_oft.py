@@ -566,7 +566,7 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     p.add_argument("--robots", default="Panda")
     p.add_argument("--camera-size", type=int, default=256)
-    p.add_argument("--max-episode-steps", type=int, default=800)
+    p.add_argument("--max-episode-steps", type=int, default=1600)
     p.add_argument("--quiet", action="store_true")
     p.add_argument(
         "--dry-run",

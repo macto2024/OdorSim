@@ -6,6 +6,8 @@ Full pipeline (collect → RLDS → fine-tune → eval): **Odorbot** `docs/odorp
 (sibling `/path/to/Odorbot/docs/odorplace-oft.md`, or `Odorbot/docs/…` when this tree is
 `Odorbot/third_party/OdorSim`).
 
+**Cameras / grasp:** `agentview` is pulled back (pos `(0.575, 0, 1.45)`, FOV 52.5° — midpoint of stock and a farther framing) so cups stay in frame. Scripted grasp dwells **0.75 s** at cup height before closing and again after close (`--grasp-dwell`). On a failed grab, the same episode **re-reaches** (up to `--max-grasp-attempts`, default 8) instead of discarding; retries stay in the trajectory. Frames: `agentview` + wrist at 256×256.
+
 ## Quick collect
 
 From an activated OdorSim / Odorbot sim env:

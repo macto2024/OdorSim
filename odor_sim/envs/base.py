@@ -61,7 +61,7 @@ class OdorManipulationEnv(ManipulationEnv):
         initialization_noise="default",
         table_full_size=(0.8, 0.8, 0.05),
         table_friction=(1.0, 5e-3, 1e-4),
-        spawn_half: float = 0.30,
+        spawn_half: float = 0.25,
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
@@ -171,6 +171,14 @@ class OdorManipulationEnv(ManipulationEnv):
             table_offset=self.table_offset,
         )
         mujoco_arena.set_origin([0, 0, 0])
+        # Pull agentview back + widen FOV so the full spawn region stays in frame
+        # (stock robosuite: pos 0.5/0/1.35, fovy~45; midpoint with a farther framing).
+        mujoco_arena.set_camera(
+            camera_name="agentview",
+            pos=[0.575, 0.0, 1.45],
+            quat=[0.653, 0.271, 0.271, 0.653],
+            camera_attribs={"fovy": "52.5"},
+        )
 
         self.odor_objects = self._make_odor_objects()
         if not self.odor_objects:

@@ -21,18 +21,19 @@ from odor_sim.envs.odor_object import make_odor_object
 MUG_POOL = ("porcelain_mug", "white_yellow_mug", "red_coffee_mug")
 
 
+def nice_mug_name(catalog: str) -> str:
+    """Human-readable mug name for language instructions (e.g. red_coffee_mug → red coffee mug)."""
+    n = str(catalog).replace("_", " ")
+    if n.endswith(" small"):
+        n = n[: -len(" small")]
+    return n
+
+
 def _default_instruction(cup_catalog_names: list[str], target_catalog: str, place_target: str) -> str:
     """Name the cup type when unique among spawned cups; else generic 'cup'."""
     place = place_target.replace("_", " ")
-
-    def _nice(name: str) -> str:
-        n = name.replace("_", " ")
-        if n.endswith(" small"):
-            n = n[: -len(" small")]
-        return n
-
     if cup_catalog_names.count(target_catalog) == 1:
-        return f"put the {_nice(target_catalog)} on the {place}"
+        return f"put the {nice_mug_name(target_catalog)} on the {place}"
     return f"put the cup on the {place}"
 
 

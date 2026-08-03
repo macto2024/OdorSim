@@ -80,6 +80,10 @@ class ScriptedPlaceCollector:
         rim_radius_frac: float = RIM_RADIUS_FRAC,
         phase_max_steps: int = 200,
         grip_hold_steps: int = 15,
+        # Seconds to dwell at grasp height before closing, and again after close.
+        grasp_dwell_s: float = 0.75,
+        # In-episode re-reach retries after a failed grab (same recorded traj).
+        max_grasp_attempts: int = 8,
         settle_steps: int = 20,
         max_episode_steps: int = 1200,
         verbose: bool = True,
@@ -114,6 +118,8 @@ class ScriptedPlaceCollector:
         self.rim_radius_frac = float(rim_radius_frac)
         self.phase_max_steps = int(phase_max_steps)
         self.grip_hold_steps = int(grip_hold_steps)
+        self.grasp_dwell_s = float(grasp_dwell_s)
+        self.max_grasp_attempts = max(1, int(max_grasp_attempts))
         self.settle_steps = int(settle_steps)
         self.max_episode_steps = int(max_episode_steps)
 
@@ -630,31 +636,63 @@ class ScriptedPlaceCollector:
         obs = self._hold(recorder, obs, GRIPPER_OPEN, max(self.settle_steps, 20))
 
         cup = self._object_pos(cup_id)
-        cup_obj = self.env.target_object
-        rim_xy = self._rim_grasp_xy(cup, cup_obj)
         cup_z0 = float(cup[2])
         table_z = float(np.asarray(self.env.table_offset).ravel()[2])
-        # Placement sites are often wrong on scanned mugs — use collision AABB.
-        cup_bot_z, cup_top_z = self._object_collision_z_bounds(cup_id)
-        cup_height = cup_top_z - cup_bot_z
-        top_off = float(np.asarray(getattr(cup_obj, "top_offset", [0, 0, 0])).ravel()[2])
-        site_top_z = cup_z0 + top_off
-        # Descend fingers below collision rim so pads pinch the wall.
-        grasp_finger_z = cup_top_z + self.grasp_z_offset
-        safe_z = max(grasp_finger_z + self.hover_z, cup_top_z + self.hover_z)
-        rim_r = self._cup_rim_radius(cup_obj)
-        self._log(
-            f"plan cup_id={cup_id!r} cup_body={self._fmt_xyz(cup)} "
-            f"table_z={table_z:.4f} coll_bot_z={cup_bot_z:.4f} coll_top_z={cup_top_z:.4f} "
-            f"cup_height={cup_height:.4f} (site_top_z={site_top_z:.4f} "
-            f"site_vs_coll={site_top_z - cup_top_z:+.4f})"
-        )
-        self._log(
-            f"plan rim_r={rim_r:.4f} rim_xy={self._fmt_xyz([rim_xy[0], rim_xy[1], 0])} "
-            f"grasp_z={grasp_finger_z:.4f} (=coll_top_z{self.grasp_z_offset:+.4f}) "
-            f"safe_z={safe_z:.4f}"
-        )
+        dwell_steps = max(1, int(round(self.grasp_dwell_s * self.control_freq)))
+        min_lift = 0.05
 
+        def _plan_grasp():
+            """Recompute rim / hover / grasp targets from the current cup pose."""
+            cup_pos = self._object_pos(cup_id)
+            cup_obj = self.env.target_object
+            rim_xy_ = self._rim_grasp_xy(cup_pos, cup_obj)
+            cup_bot_z, cup_top_z = self._object_collision_z_bounds(cup_id)
+            grasp_finger_z_ = cup_top_z + self.grasp_z_offset
+            safe_z_ = max(grasp_finger_z_ + self.hover_z, cup_top_z + self.hover_z)
+            rim_r = self._cup_rim_radius(cup_obj)
+            top_off = float(
+                np.asarray(getattr(cup_obj, "top_offset", [0, 0, 0])).ravel()[2]
+            )
+            site_top_z = float(cup_pos[2]) + top_off
+            self._log(
+                f"plan cup_id={cup_id!r} cup_body={self._fmt_xyz(cup_pos)} "
+                f"table_z={table_z:.4f} coll_bot_z={cup_bot_z:.4f} "
+                f"coll_top_z={cup_top_z:.4f} "
+                f"cup_height={cup_top_z - cup_bot_z:.4f} "
+                f"(site_top_z={site_top_z:.4f} "
+                f"site_vs_coll={site_top_z - cup_top_z:+.4f})"
+            )
+            self._log(
+                f"plan rim_r={rim_r:.4f} "
+                f"rim_xy={self._fmt_xyz([rim_xy_[0], rim_xy_[1], 0])} "
+                f"grasp_z={grasp_finger_z_:.4f} "
+                f"(=coll_top_z{self.grasp_z_offset:+.4f}) "
+                f"safe_z={safe_z_:.4f}"
+            )
+            return cup_pos, rim_xy_, grasp_finger_z_, safe_z_
+
+        def _recover_open_raise(obs_, safe_z_: float, phase: str):
+            """Open gripper and raise to safe_z before the next grasp attempt."""
+            self._log(f"{phase}: open + raise for regrasp")
+            obs_ = self._hold(
+                recorder, obs_, GRIPPER_OPEN, max(self.grip_hold_steps, 10)
+            )
+            fingers_ = self._finger_midpoint_pos()
+            raise_target_ = np.array(
+                [fingers_[0], fingers_[1], float(safe_z_)], dtype=float
+            )
+            obs_, ok_ = self._go_to(
+                recorder,
+                obs_,
+                raise_target_,
+                GRIPPER_OPEN,
+                track_fingers=True,
+                phase=f"{phase}_raise",
+            )
+            return obs_, ok_
+
+        # Initial raise to approach height, then retry grasp until the cup lifts.
+        cup, rim_xy, grasp_finger_z, safe_z = _plan_grasp()
         fingers = self._finger_midpoint_pos()
         raise_target = np.array([fingers[0], fingers[1], safe_z], dtype=float)
         obs, ok = self._go_to(
@@ -668,71 +706,109 @@ class ScriptedPlaceCollector:
         if not ok:
             return fail("raise failed")
 
-        # Hover above the rim (finger midpoint), then descend to estimated rim Z.
-        hover = np.array([rim_xy[0], rim_xy[1], safe_z], dtype=float)
-        obs, ok = self._go_to(
-            recorder,
-            obs,
-            hover,
-            GRIPPER_OPEN,
-            xy_first=True,
-            track_fingers=True,
-            phase="hover",
-        )
-        if not ok:
-            return fail("hover failed")
-
-        grasp = np.array([rim_xy[0], rim_xy[1], grasp_finger_z], dtype=float)
-        obs, ok = self._go_to(
-            recorder,
-            obs,
-            grasp,
-            GRIPPER_OPEN,
-            track_fingers=True,
-            phase="grasp_descend",
-        )
-        if not ok:
-            return fail("grasp_descend failed")
-
-        # Close gripper — jaws pinch the rim wall.
-        self._log("close gripper")
-        obs = self._hold(recorder, obs, GRIPPER_CLOSE, self.grip_hold_steps)
-        # Actual pickup height (may differ slightly from planned grasp_finger_z).
-        pickup_finger_z = float(self._finger_midpoint_pos()[2])
-        # Rim grasp is offset from cup center; keep that offset so the cup
-        # body lands on the plate center (not the rim / edge).
+        pickup_finger_z = float(grasp_finger_z)
         grasp_xy_offset = np.asarray(rim_xy[:2], dtype=float) - np.asarray(
             cup[:2], dtype=float
         )
-        self._log(
-            f"grasp_xy_offset={self._fmt_xyz([grasp_xy_offset[0], grasp_xy_offset[1], 0])} "
-            f"(rim relative to cup center)"
-        )
+        grasped = False
+        for g_attempt in range(1, self.max_grasp_attempts + 1):
+            if len(recorder) >= self.max_episode_steps:
+                return fail("episode cap during grasp retries")
 
-        # Lift from current finger height (not cup body + lift_z — after a rim
-        # grasp fingers are already ~cup_top, so body+lift_z barely rises).
-        fingers = self._finger_midpoint_pos()
-        lift_target = np.array(
-            [fingers[0], fingers[1], float(fingers[2]) + self.lift_z], dtype=float
-        )
-        obs, ok = self._go_to(
-            recorder,
-            obs,
-            lift_target,
-            GRIPPER_CLOSE,
-            track_fingers=True,
-            phase="lift",
-        )
-        if not ok:
-            return fail("lift failed")
-        cup_z_after = float(self.env.object_body_z(cup_id))
-        min_lift = 0.05
-        self._log(
-            f"lift check cup_z={cup_z_after:.4f} "
-            f"(need >={cup_z0 + min_lift:.4f}, delta={cup_z_after - cup_z0:+.4f})"
-        )
-        if cup_z_after < cup_z0 + min_lift:
-            return fail("cup not lifted")
+            cup, rim_xy, grasp_finger_z, safe_z = _plan_grasp()
+            self._log(f"grasp attempt {g_attempt}/{self.max_grasp_attempts}")
+
+            # Hover above the rim (finger midpoint), then descend to rim Z.
+            hover = np.array([rim_xy[0], rim_xy[1], safe_z], dtype=float)
+            obs, ok = self._go_to(
+                recorder,
+                obs,
+                hover,
+                GRIPPER_OPEN,
+                xy_first=True,
+                track_fingers=True,
+                phase=f"hover_{g_attempt}",
+            )
+            if not ok:
+                obs, ok = _recover_open_raise(obs, safe_z, f"hover_fail_{g_attempt}")
+                if not ok:
+                    return fail("hover raise recovery failed")
+                continue
+
+            grasp = np.array([rim_xy[0], rim_xy[1], grasp_finger_z], dtype=float)
+            obs, ok = self._go_to(
+                recorder,
+                obs,
+                grasp,
+                GRIPPER_OPEN,
+                track_fingers=True,
+                phase=f"grasp_descend_{g_attempt}",
+            )
+            if not ok:
+                obs, ok = _recover_open_raise(obs, safe_z, f"descend_fail_{g_attempt}")
+                if not ok:
+                    return fail("descend raise recovery failed")
+                continue
+
+            # Dwell at grasp height (open), close, then dwell again before lift.
+            self._log(
+                f"pre-grasp dwell {self.grasp_dwell_s:.2f}s ({dwell_steps} steps)"
+            )
+            obs = self._hold(recorder, obs, GRIPPER_OPEN, dwell_steps)
+            self._log("close gripper")
+            self._log(
+                f"post-grasp dwell {self.grasp_dwell_s:.2f}s ({dwell_steps} steps)"
+            )
+            obs = self._hold(recorder, obs, GRIPPER_CLOSE, dwell_steps)
+
+            pickup_finger_z = float(self._finger_midpoint_pos()[2])
+            # Rim grasp is offset from cup center; keep that offset so the cup
+            # body lands on the plate center (not the rim / edge).
+            grasp_xy_offset = np.asarray(rim_xy[:2], dtype=float) - np.asarray(
+                cup[:2], dtype=float
+            )
+            self._log(
+                f"grasp_xy_offset="
+                f"{self._fmt_xyz([grasp_xy_offset[0], grasp_xy_offset[1], 0])} "
+                f"(rim relative to cup center)"
+            )
+
+            fingers = self._finger_midpoint_pos()
+            lift_target = np.array(
+                [fingers[0], fingers[1], float(fingers[2]) + self.lift_z],
+                dtype=float,
+            )
+            obs, ok = self._go_to(
+                recorder,
+                obs,
+                lift_target,
+                GRIPPER_CLOSE,
+                track_fingers=True,
+                phase=f"lift_{g_attempt}",
+            )
+            cup_z_after = float(self.env.object_body_z(cup_id))
+            self._log(
+                f"lift check cup_z={cup_z_after:.4f} "
+                f"(need >={cup_z0 + min_lift:.4f}, "
+                f"delta={cup_z_after - cup_z0:+.4f})"
+            )
+            if ok and cup_z_after >= cup_z0 + min_lift:
+                grasped = True
+                self._log(f"grasp attempt {g_attempt} succeeded")
+                break
+
+            self._log(
+                f"grasp attempt {g_attempt} failed "
+                f"({'lift motion' if not ok else 'cup not lifted'}); retrying"
+            )
+            obs, ok = _recover_open_raise(obs, safe_z, f"regrasp_{g_attempt}")
+            if not ok:
+                return fail("regrasp raise failed")
+
+        if not grasped:
+            return fail(
+                f"cup not lifted after {self.max_grasp_attempts} grasp attempts"
+            )
 
         # Translate above plate at current lift height (don't drop early).
         # Gripper XY = plate center + rim offset → cup center on plate center.
@@ -873,7 +949,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--camera-size", type=int, default=256)
     p.add_argument("--no-frames", action="store_true", help="Skip PNG frame mining")
     p.add_argument("--render", action="store_true", help="On-screen MJViewer")
-    p.add_argument("--max-episode-steps", type=int, default=800)
+    p.add_argument("--max-episode-steps", type=int, default=1600)
     p.add_argument(
         "--grasp-z-offset",
         type=float,
@@ -881,6 +957,24 @@ def build_argparser() -> argparse.ArgumentParser:
         help=(
             "Finger midpoint Z relative to collision AABB max (m). "
             "Default -0.02 = 2 cm below rim for wall pinch."
+        ),
+    )
+    p.add_argument(
+        "--grasp-dwell",
+        type=float,
+        default=0.75,
+        help=(
+            "Seconds to dwell at grasp height before closing the gripper, "
+            "and again after close before lift (default 0.75)."
+        ),
+    )
+    p.add_argument(
+        "--max-grasp-attempts",
+        type=int,
+        default=3,
+        help=(
+            "In-episode re-reach retries after a failed grab before giving up "
+            "(default 3). Failed attempts stay in the recorded trajectory."
         ),
     )
     p.add_argument(
@@ -916,6 +1010,8 @@ def main(argv=None):
         seed=int(args.seed),
         max_episode_steps=args.max_episode_steps,
         grasp_z_offset=float(args.grasp_z_offset),
+        grasp_dwell_s=float(args.grasp_dwell),
+        max_grasp_attempts=int(args.max_grasp_attempts),
         verbose=not args.quiet,
     ) as collector:
         print(
