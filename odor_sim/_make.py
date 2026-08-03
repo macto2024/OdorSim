@@ -155,6 +155,7 @@ def make(
     mox_model: "str | list[str] | None" = None,
     load_resistance: "float | None" = None,
     vcc: float = 5.0,
+    kill_stale_gaden: bool = True,
     **env_kwargs,
 ) -> OdorCosimSession:
     """Construct an odor co-simulation session.
@@ -198,6 +199,9 @@ def make(
             when included, else the first selected model.
         load_resistance: voltage-divider RL [ohms]; ``None`` uses each model R0.
         vcc: divider supply voltage (V).
+        kill_stale_gaden: if True (default), kill other ``rt_server`` processes
+            before starting. Parallel collectors must set False and isolate via
+            ``ROS_DOMAIN_ID``.
         **env_kwargs: forwarded to the env constructor (e.g. ``robots``,
             ``has_renderer``, ``control_freq``, ``enose_site_offset``).
 
@@ -272,7 +276,7 @@ def make(
                 publish_markers=publish_markers,
                 log_dir=server_log_dir,
             )
-            server.start(timeout=wait_timeout)
+            server.start(timeout=wait_timeout, kill_stale=kill_stale_gaden)
             owns_server = True
 
         if bridge:

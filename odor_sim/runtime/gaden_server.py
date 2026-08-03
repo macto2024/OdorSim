@@ -82,8 +82,14 @@ class GadenServerManager:
         cmd.extend(self.extra_ros_args)
         return cmd
 
-    def start(self, timeout: float = 60.0) -> None:
+    def start(self, timeout: float = 60.0, *, kill_stale: bool = True) -> None:
         """Spawn the server and block until it logs that it is ready.
+
+        Args:
+            timeout: seconds to wait for the ready marker.
+            kill_stale: if True (default), terminate other ``rt_server``
+                processes first so topics are not shared. Parallel collectors
+                must pass ``False`` and isolate via ``ROS_DOMAIN_ID``.
 
         Raises:
             RuntimeError: the process exited early or did not report ready
@@ -97,7 +103,9 @@ class GadenServerManager:
 
         # Drop any stale rt_server from a prior teleop/crash so ROS topics are
         # not shared across multiple GADEN instances (causes sim_time zig-zag).
-        GadenServerManager.kill_all()
+        # Skip when running parallel workers (each has its own ROS_DOMAIN_ID).
+        if kill_stale:
+            GadenServerManager.kill_all()
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.ros_log_dir.mkdir(parents=True, exist_ok=True)
