@@ -57,6 +57,22 @@ class OdorPlace(OdorManipulationEnv):
     # Slightly looser than ClassifyLiquidPlace (0.03) — mug meshes are wide.
     on_xy_threshold = 0.05
 
+    # Stock robosuite framing rather than the pulled-back base default. The
+    # spawn box below is deliberately small enough to stay in frame here, and
+    # the closer camera buys ~40% more pixels per centimetre of height (2.8
+    # vs 2.0 px/cm at 256²) — the cue the policy uses to judge when the
+    # gripper is low enough to close on the mug.
+    agentview_pos = (0.5, 0.0, 1.35)
+    agentview_fovy = 45.0
+
+    # Spawn bands in table-frame XY (m), sized from the agentview frustum so
+    # both the mug and the gripper hovering above it stay in view for the whole
+    # episode. Cups sit forward of the plate, toward the camera.
+    plate_x_range = (-0.06, 0.06)
+    plate_y_range = (-0.06, 0.06)
+    cup_x_range = (0.12, 0.22)
+    cup_y_range = (-0.17, 0.17)
+
     def __init__(
         self,
         robots="Panda",
@@ -65,6 +81,10 @@ class OdorPlace(OdorManipulationEnv):
         place_target: str = "plate",
         instruction: str = "",
         scenario_config_dir=None,
+        cup_x_range=None,
+        cup_y_range=None,
+        plate_x_range=None,
+        plate_y_range=None,
         **kwargs,
     ):
         from odor_sim.config.objects import get_object_spec
@@ -86,6 +106,16 @@ class OdorPlace(OdorManipulationEnv):
         self._cup_catalog_names = list(cups_list)
         self._cup_instance_ids = [f"{name}_{i}" for i, name in enumerate(cups_list)]
         self._place_target_name = place_target
+
+        for attr, value in (
+            ("cup_x_range", cup_x_range),
+            ("cup_y_range", cup_y_range),
+            ("plate_x_range", plate_x_range),
+            ("plate_y_range", plate_y_range),
+        ):
+            if value is not None:
+                lo, hi = (float(v) for v in value)
+                setattr(self, attr, (lo, hi))
 
         self._target_index = self._resolve_target_index(target_cup)
         self._target_instance_id = self._cup_instance_ids[self._target_index]
@@ -148,15 +178,17 @@ class OdorPlace(OdorManipulationEnv):
         return objects
 
     def _build_placement_initializer(self) -> SequentialCompositeSampler:
-        """Plate near center; cups in a forward reachable band (non-overlapping)."""
-        # Keep centers >= ~0.16 m apart (mug/plate horizontal_radius ~0.08).
-        # Band sized from spawn_half so packing tracks the table-wide spawn box.
-        half = float(getattr(self, "spawn_half", 0.30))
-        plate_x_range = [-0.06, 0.06]
-        plate_y_range = [-0.06, 0.06]
-        # Forward of plate, using most of the spawn box in Y and outer X.
-        cup_x_range = [0.12, half]
-        cup_y_range = [-half, half]
+        """Plate near center; cups in a forward reachable band (non-overlapping).
+
+        The bands come from the class attributes rather than ``spawn_half``:
+        they are sized to the agentview frustum, not to the table, so widening
+        them silently pushes mugs out of frame. ``ensure_valid_placement``
+        still keeps centers ~0.16 m apart (mug/plate horizontal_radius ~0.08).
+        """
+        plate_x_range = list(self.plate_x_range)
+        plate_y_range = list(self.plate_y_range)
+        cup_x_range = list(self.cup_x_range)
+        cup_y_range = list(self.cup_y_range)
         sampler = SequentialCompositeSampler(name="OdorPlaceSampler")
         for obj in self.odor_objects:
             rotation = getattr(obj, "rotation", None)

@@ -59,7 +59,8 @@ Then optionally synthesize other MOX streams and convert to LeRobot — see [gui
 | [guides/odor-sniff-collection.md](guides/odor-sniff-collection.md) | Stationary odor-only MOX sniffs (ScentFormer) |
 | [guides/lerobot.md](guides/lerobot.md) | Synthesize → LeRobot export |
 | [guides/gaden-server.md](guides/gaden-server.md) | Manual GADEN RT server |
-| [guides/scripted-collection.md](guides/scripted-collection.md) | Scripted `OdorPlace` for OpenVLA-OFT |
+| [guides/scripted-collection.md](guides/scripted-collection.md) | Scripted vision `OdorPlace` (`collect_place_oft`) |
+| [guides/scripted-odor-place-collection.md](guides/scripted-odor-place-collection.md) | Scripted odor pick-place (`collect_odor_place_oft`) |
 
 Machine-specific install notes: [SETUP.md](SETUP.md), [VNC_SETUP.md](VNC_SETUP.md).
 

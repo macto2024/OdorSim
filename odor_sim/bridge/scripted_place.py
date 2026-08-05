@@ -5,10 +5,22 @@ Drives the EE toward cup/plate waypoints with OSC_POSE position deltas
 records successful episodes with :class:`EpisodeRecorder` (same layout as
 teleop), and skips GADEN (``auto_start_gaden=False``).
 
+The motion profile is shaped for *imitation learning*, not just for reaching
+the waypoint. A pure proportional controller saturates at ``±1`` for any error
+above ~6 mm, which yields bang-bang demonstrations: every recorded action is
+-1, 0 or +1 and the "stop descending and close" decision becomes a cliff the
+policy cannot see in pixels. Instead the commanded magnitude ramps down
+linearly with distance inside ``slow_radius`` so the recorded action encodes
+*how far the target still is* — the cue a policy needs to know when to stop.
+See :meth:`ScriptedPlaceCollector._speed_for`.
+
 Example::
 
     python -m odor_sim.bridge.scripted_place \\
         --num-demos 20 --num-cups 2 --out-dir datasets/teleop/odorplace_scripted
+
+``--action-noise`` (default 0.5) perturbs the commands while the closed loop
+corrects them, so the demos also cover off-nominal states with recovery labels.
 """
 
 from __future__ import annotations
@@ -42,6 +54,20 @@ DEFAULT_RIM_RADIUS = 0.045
 # Place EE this fraction of radius out from center so jaws pinch the wall.
 RIM_RADIUS_FRAC = 0.85
 
+# RLDS export drops steps whose arm action norm is below this (LIBERO no-noops
+# filter). Commands must stay above it to survive into the training set.
+NOOP_THRESHOLD = 1e-4
+
+# --- Motion shaping defaults (see module docstring) -------------------------
+DEFAULT_SLOW_RADIUS = 0.08
+DEFAULT_MIN_SPEED = 0.05
+DEFAULT_MIN_SPEED_DIST = 0.002
+DEFAULT_ACTION_NOISE = 0.5
+DEFAULT_ACTION_NOISE_FLOOR = 0.3
+DEFAULT_GRASP_XY_TOL = 0.008
+DEFAULT_GRASP_Z_TOL = 0.005
+DEFAULT_PRESS_Z = 0.005
+
 
 class ScriptedPlaceCollector:
     """Closed-loop OSC waypoint pick → place collector."""
@@ -68,6 +94,26 @@ class ScriptedPlaceCollector:
         max_pos_action: float = 1.0,
         xy_tol: float = 0.015,
         z_tol: float = 0.015,
+        # Distance (m) at which the command starts ramping down linearly. 0
+        # disables shaping and restores the old bang-bang profile.
+        slow_radius: float = DEFAULT_SLOW_RADIUS,
+        # Command floor so decelerating steps stay above the RLDS no-op filter,
+        # and the distance below which the floor is released (m).
+        min_speed: float = DEFAULT_MIN_SPEED,
+        min_speed_dist: float = DEFAULT_MIN_SPEED_DIST,
+        # Gaussian sigma (normalized action units) added to the position
+        # command. The closed loop corrects it, so demos gain recovery labels.
+        action_noise: float = DEFAULT_ACTION_NOISE,
+        # Noise is scaled by distance/slow_radius but never below this fraction,
+        # so the fine approach still sees some perturbation.
+        action_noise_floor: float = DEFAULT_ACTION_NOISE_FLOOR,
+        # Tighter tolerances for the final grasp descent (m): the coarse 15 mm
+        # default lets the fingers stop a rim-height above the intended pinch.
+        grasp_xy_tol: float = DEFAULT_GRASP_XY_TOL,
+        grasp_z_tol: float = DEFAULT_GRASP_Z_TOL,
+        # Extra downward bias held while the jaws close (m), so those steps
+        # carry a non-zero command instead of being filtered out as no-ops.
+        press_z: float = DEFAULT_PRESS_Z,
         hover_z: float = 0.18,
         # Finger-midpoint grasp Z relative to collision AABB max Z (m).
         # Default: 2 cm below rim so pads pinch the wall (1 mm was too shallow).
@@ -109,7 +155,16 @@ class ScriptedPlaceCollector:
         self.max_pos_action = float(max_pos_action)
         self.xy_tol = float(xy_tol)
         self.z_tol = float(z_tol)
+        self.slow_radius = max(0.0, float(slow_radius))
+        self.min_speed = max(0.0, float(min_speed))
+        self.min_speed_dist = max(0.0, float(min_speed_dist))
+        self.action_noise = max(0.0, float(action_noise))
+        self.action_noise_floor = float(np.clip(action_noise_floor, 0.0, 1.0))
+        self.grasp_xy_tol = float(grasp_xy_tol)
+        self.grasp_z_tol = float(grasp_z_tol)
+        self.press_z = float(press_z)
         self.hover_z = float(hover_z)
+        self.rng = np.random.default_rng(seed)
         self.grasp_z_offset = float(grasp_z_offset)
         self.place_z = float(place_z)
         self.lift_z = float(lift_z)
@@ -375,6 +430,36 @@ class ScriptedPlaceCollector:
             direction = direction / (np.linalg.norm(direction) + 1e-9)
         return cup_pos[:2] + radius * direction
 
+    def _speed_for(self, dist: float) -> float:
+        """Command magnitude in ``[0, max_pos_action]`` for a distance of ``dist`` m.
+
+        Far from the target the proportional term saturates at ``max_pos_action``.
+        Inside ``slow_radius`` the magnitude is capped by a linear ramp in
+        distance, which turns the approach into a smooth deceleration whose
+        recorded amplitude is a monotone function of the remaining distance.
+        ``min_speed`` keeps those decelerating steps above the RLDS no-op filter
+        until the tracked point is essentially on target.
+        """
+        if dist <= 1e-9:
+            return 0.0
+        speed = self.pos_gain * dist / OSC_POS_SCALE
+        if self.slow_radius > 0.0 and dist < self.slow_radius:
+            speed = min(speed, self.max_pos_action * (dist / self.slow_radius))
+        speed = min(speed, self.max_pos_action)
+        if dist > self.min_speed_dist:
+            speed = max(speed, self.min_speed)
+        return float(speed)
+
+    def _sample_noise(self, dist: float) -> np.ndarray:
+        """Exploration noise for the position command, faded near the target."""
+        if self.action_noise <= 0.0:
+            return np.zeros(3, dtype=float)
+        scale = 1.0
+        if self.slow_radius > 0.0:
+            scale = min(1.0, dist / self.slow_radius)
+        scale = max(self.action_noise_floor, scale)
+        return self.rng.normal(0.0, self.action_noise * scale, size=3)
+
     def _pose_delta_action(
         self,
         obs,
@@ -382,16 +467,24 @@ class ScriptedPlaceCollector:
         gripper: float,
         *,
         track_fingers: bool = False,
+        noise: bool = True,
     ) -> np.ndarray:
         """Normalized OSC_POSE delta in [-1, 1] toward ``target_pos`` (+ gripper).
 
         When ``track_fingers`` is True, the error is measured from the fingertip
         midpoint (not the EEF grip site). OSC still commands the arm via EEF
         deltas — same direction as the finger error for small offsets.
+
+        The magnitude follows :meth:`_speed_for` while the direction is taken
+        from the raw error, so scaling never skews the approach direction the
+        way independent per-axis clipping does.
         """
         cur = self._track_pos(obs, track_fingers=track_fingers)
         err = np.asarray(target_pos, dtype=float).ravel()[:3] - cur
-        unit = (self.pos_gain * err) / OSC_POS_SCALE
+        dist = float(np.linalg.norm(err))
+        unit = (err / dist) * self._speed_for(dist) if dist > 1e-9 else np.zeros(3)
+        if noise:
+            unit = unit + self._sample_noise(dist)
         unit = np.clip(unit, -self.max_pos_action, self.max_pos_action)
         action = np.zeros(self._action_dim(), dtype=float)
         n_pose = min(3, action.size)
@@ -408,12 +501,16 @@ class ScriptedPlaceCollector:
         *,
         check_z: bool = True,
         track_fingers: bool = False,
+        xy_tol: "float | None" = None,
+        z_tol: "float | None" = None,
     ) -> bool:
         cur = self._track_pos(obs, track_fingers=track_fingers)
-        xy_ok = np.linalg.norm(cur[:2] - target_pos[:2]) < self.xy_tol
+        xy_tol = self.xy_tol if xy_tol is None else float(xy_tol)
+        z_tol = self.z_tol if z_tol is None else float(z_tol)
+        xy_ok = np.linalg.norm(cur[:2] - target_pos[:2]) < xy_tol
         if not check_z:
             return bool(xy_ok)
-        z_ok = abs(float(cur[2] - target_pos[2])) < self.z_tol
+        z_ok = abs(float(cur[2] - target_pos[2])) < z_tol
         return bool(xy_ok and z_ok)
 
     def _holding_target(self) -> bool:
@@ -495,11 +592,39 @@ class ScriptedPlaceCollector:
         return obs, reward, done, info
 
     def _hold(self, recorder, obs, gripper: float, n_steps: int):
+        """Open-loop dwell with a zero arm command (settling only).
+
+        These steps are dropped by the RLDS no-op filter; use :meth:`_hold_at`
+        for dwells that should survive into the training set.
+        """
         action = np.zeros(self._action_dim(), dtype=float)
         gdof = self._gripper_dof()
         if gdof > 0:
             action[-gdof:] = gripper
         for _ in range(max(0, n_steps)):
+            obs, _, _, _ = self._step(recorder, obs, action)
+        return obs
+
+    def _hold_at(
+        self,
+        recorder,
+        obs,
+        target_pos: np.ndarray,
+        gripper: float,
+        n_steps: int,
+        *,
+        track_fingers: bool = True,
+    ):
+        """Closed-loop dwell that keeps servoing toward ``target_pos``.
+
+        Unlike :meth:`_hold` the recorded command stays non-zero, so a dwell
+        held slightly below the grasp point teaches "keep pressing down while
+        the jaws close" instead of vanishing from the dataset as a no-op.
+        """
+        for _ in range(max(0, n_steps)):
+            action = self._pose_delta_action(
+                obs, target_pos, gripper, track_fingers=track_fingers
+            )
             obs, _, _, _ = self._step(recorder, obs, action)
         return obs
 
@@ -534,9 +659,16 @@ class ScriptedPlaceCollector:
         max_steps: "int | None" = None,
         xy_first: bool = False,
         track_fingers: bool = False,
+        xy_tol: "float | None" = None,
+        z_tol: "float | None" = None,
         phase: str = "go_to",
     ):
-        """Move tracked point (EEF or finger midpoint) toward ``target_pos``."""
+        """Move tracked point (EEF or finger midpoint) toward ``target_pos``.
+
+        ``xy_tol`` / ``z_tol`` override the instance defaults for this phase
+        only; the optional ``xy_first`` pre-positioning always uses the coarse
+        default since it is just a collision-free translate.
+        """
         limit = self.phase_max_steps if max_steps is None else int(max_steps)
         self._log_reach(f"{phase} start", obs, target_pos, track_fingers=track_fingers)
         if xy_first:
@@ -571,7 +703,12 @@ class ScriptedPlaceCollector:
 
         for step_i in range(limit):
             if self._at_target(
-                obs, target_pos, check_z=check_z, track_fingers=track_fingers
+                obs,
+                target_pos,
+                check_z=check_z,
+                track_fingers=track_fingers,
+                xy_tol=xy_tol,
+                z_tol=z_tol,
             ):
                 self._log_reach(
                     f"{phase} ok (step {step_i})",
@@ -593,7 +730,12 @@ class ScriptedPlaceCollector:
                 )
                 return obs, False
         ok = self._at_target(
-            obs, target_pos, check_z=check_z, track_fingers=track_fingers
+            obs,
+            target_pos,
+            check_z=check_z,
+            track_fingers=track_fingers,
+            xy_tol=xy_tol,
+            z_tol=z_tol,
         )
         self._log_reach(
             f"{phase} {'ok' if ok else 'FAIL (timeout)'}",
@@ -742,6 +884,8 @@ class ScriptedPlaceCollector:
                 grasp,
                 GRIPPER_OPEN,
                 track_fingers=True,
+                xy_tol=self.grasp_xy_tol,
+                z_tol=self.grasp_z_tol,
                 phase=f"grasp_descend_{g_attempt}",
             )
             if not ok:
@@ -751,15 +895,20 @@ class ScriptedPlaceCollector:
                 continue
 
             # Dwell at grasp height (open), close, then dwell again before lift.
+            # Both dwells servo toward a target a hair below the grasp point so
+            # the commands stay non-zero and survive the RLDS no-op filter.
+            press = grasp.copy()
+            press[2] = float(grasp[2]) - self.press_z
             self._log(
-                f"pre-grasp dwell {self.grasp_dwell_s:.2f}s ({dwell_steps} steps)"
+                f"pre-grasp dwell {self.grasp_dwell_s:.2f}s ({dwell_steps} steps) "
+                f"pressing to z={press[2]:.4f} (grasp_z-{self.press_z:.4f})"
             )
-            obs = self._hold(recorder, obs, GRIPPER_OPEN, dwell_steps)
+            obs = self._hold_at(recorder, obs, press, GRIPPER_OPEN, dwell_steps)
             self._log("close gripper")
             self._log(
                 f"post-grasp dwell {self.grasp_dwell_s:.2f}s ({dwell_steps} steps)"
             )
-            obs = self._hold(recorder, obs, GRIPPER_CLOSE, dwell_steps)
+            obs = self._hold_at(recorder, obs, press, GRIPPER_CLOSE, dwell_steps)
 
             pickup_finger_z = float(self._finger_midpoint_pos()[2])
             # Rim grasp is offset from cup center; keep that offset so the cup
@@ -854,9 +1003,10 @@ class ScriptedPlaceCollector:
         if not ok:
             return fail("place_descend failed")
 
-        # Open gripper + settle
+        # Open gripper (station-keeping on the place target so the release
+        # frames carry a command), then settle open-loop before retreating.
         self._log("open gripper / settle")
-        obs = self._hold(recorder, obs, GRIPPER_OPEN, self.grip_hold_steps)
+        obs = self._hold_at(recorder, obs, place, GRIPPER_OPEN, self.grip_hold_steps)
         obs = self._hold(recorder, obs, GRIPPER_OPEN, self.settle_steps)
 
         # Retreat upward from current finger height.
@@ -924,6 +1074,97 @@ def _sample_cups(rng: np.random.Generator, num_cups: int, pool=MUG_POOL) -> list
     return [str(x) for x in rng.choice(pool, size=num_cups, replace=True)]
 
 
+def add_motion_shaping_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Register the demonstration-quality knobs (shared with the batch collector)."""
+    g = p.add_argument_group("motion shaping (demonstration quality)")
+    g.add_argument(
+        "--slow-radius",
+        type=float,
+        default=DEFAULT_SLOW_RADIUS,
+        help=(
+            "Distance (m) within which the command ramps down linearly, so the "
+            "recorded action encodes remaining distance instead of saturating "
+            f"at ±1 (default {DEFAULT_SLOW_RADIUS}). 0 = old bang-bang profile."
+        ),
+    )
+    g.add_argument(
+        "--min-speed",
+        type=float,
+        default=DEFAULT_MIN_SPEED,
+        help=(
+            "Floor on the command magnitude so decelerating steps stay above "
+            f"the RLDS no-op filter (default {DEFAULT_MIN_SPEED})."
+        ),
+    )
+    g.add_argument(
+        "--min-speed-dist",
+        type=float,
+        default=DEFAULT_MIN_SPEED_DIST,
+        help=(
+            "Distance (m) below which --min-speed is released so the command "
+            f"can decay to zero on target (default {DEFAULT_MIN_SPEED_DIST})."
+        ),
+    )
+    g.add_argument(
+        "--action-noise",
+        type=float,
+        default=DEFAULT_ACTION_NOISE,
+        help=(
+            "Gaussian sigma (normalized units) added to the position command. "
+            "The closed loop corrects it, so demos gain off-nominal states with "
+            f"recovery labels (default {DEFAULT_ACTION_NOISE})."
+        ),
+    )
+    g.add_argument(
+        "--action-noise-floor",
+        type=float,
+        default=DEFAULT_ACTION_NOISE_FLOOR,
+        help=(
+            "Lower bound on the distance-based noise fade, keeping some "
+            f"perturbation during the fine approach (default {DEFAULT_ACTION_NOISE_FLOOR})."
+        ),
+    )
+    g.add_argument(
+        "--grasp-xy-tol",
+        type=float,
+        default=DEFAULT_GRASP_XY_TOL,
+        help=f"XY tolerance (m) for the final grasp descent (default {DEFAULT_GRASP_XY_TOL})",
+    )
+    g.add_argument(
+        "--grasp-z-tol",
+        type=float,
+        default=DEFAULT_GRASP_Z_TOL,
+        help=(
+            "Z tolerance (m) for the final grasp descent; the coarse default "
+            f"lets the fingers stop a rim-height high (default {DEFAULT_GRASP_Z_TOL})."
+        ),
+    )
+    g.add_argument(
+        "--press-z",
+        type=float,
+        default=DEFAULT_PRESS_Z,
+        help=(
+            "Downward bias (m) held while the jaws close so those steps carry a "
+            f"non-zero command (default {DEFAULT_PRESS_Z})."
+        ),
+    )
+    return p
+
+
+def motion_shaping_kwargs(args) -> dict:
+    """Collect :func:`add_motion_shaping_args` values as constructor kwargs."""
+    return {
+        "slow_radius": float(args.slow_radius),
+        "min_speed": float(args.min_speed),
+        "min_speed_dist": float(args.min_speed_dist),
+        "action_noise": float(args.action_noise),
+        "action_noise_floor": float(args.action_noise_floor),
+        "grasp_xy_tol": float(args.grasp_xy_tol),
+        "grasp_z_tol": float(args.grasp_z_tol),
+        "press_z": float(args.press_z),
+    }
+
+
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Scripted OSC pick-place collector for OdorPlace")
     p.add_argument("--cups", nargs="+", default=None, help="Catalog mug names to spawn")
@@ -982,6 +1223,7 @@ def build_argparser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable per-phase reach logs (target / fingers / eef / err)",
     )
+    add_motion_shaping_args(p)
     return p
 
 
@@ -1013,6 +1255,7 @@ def main(argv=None):
         grasp_dwell_s=float(args.grasp_dwell),
         max_grasp_attempts=int(args.max_grasp_attempts),
         verbose=not args.quiet,
+        **motion_shaping_kwargs(args),
     ) as collector:
         print(
             f"[scripted_place] cups={cups} target={target!r} "

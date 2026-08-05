@@ -19,7 +19,7 @@ python -m odor_sim.bridge.collect_odor \
   --out-dir datasets/odor_sniffs/voc6_continuous
 ```
 
-`--num-workers N` runs **N parallel processes** (like `collect_odorplace_oft`). Each worker gets its own `ROS_DOMAIN_ID` (base `--ros-domain-base`, default 40) and GADEN server so topics do not collide. Resume via `manifest.csv` still works — **stop any serial run first**, then relaunch with workers; finished sniffs are skipped.
+`--num-workers N` runs **N parallel processes** (like `collect_odor_place_oft`). Each worker gets its own `ROS_DOMAIN_ID` (base `--ros-domain-base`, default 40) and GADEN server so topics do not collide. Resume via `manifest.csv` still works — **stop any serial run first**, then relaunch with workers; finished sniffs are skipped.
 
 With `--vocs`, sniff indices cycle strengths (`sniff_000`→0.3, `001`→0.7, `002`→1.0, `003`→0.3, …). All land under `ethanol/` with `label=ethanol`; meta/manifest keep `spawn=ethanol0.3` and `strength=0.3`.
 

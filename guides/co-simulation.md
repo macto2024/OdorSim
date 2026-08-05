@@ -16,8 +16,8 @@ with odorsim.make("OdorLift", objects=["mango"]) as cosim:
 
 - **`OdorLift`**: Lift-style manipulation. Spawns one or more catalog objects; choose which is the lift target (default: the first). Extra objects are odor-emitting distractors. Success when the target rises ~4 cm above its resting height.
 - **`ClassifyLiquid`**: Same lift success, but you choose **liquids** (odor classes) instead of objects. Each liquid is shown in a randomly chosen cup mesh every episode (`porcelain_mug`, `white_yellow_mug`, or `red_coffee_mug`), so appearance is decorrelated from smell. Available liquids: `water`, `coconut_water`, `alcohol`, `coke`, `grape_juice`, `wine`, plus pure single-VOC classes for every MOX gas at strengths 0.3 / 0.7 / 1.0 (see `odor_sim/config/liquids.yaml`).
-- **`ClassifyLiquidPlace`**: Same liquid/cup setup as `ClassifyLiquid`, but success is placing the target liquid's cup **on** a catalog place target (default `plate`) — contact, cup above the surface, and XY centers within ~3 cm (LIBERO-style `On`). The place target is odorless.
-- **`OdorPlace`**: Vision pick-and-place of a mug onto a plate (used for scripted OpenVLA-OFT demos). See [scripted-collection.md](scripted-collection.md).
+- **`ClassifyLiquidPlace`**: Same liquid/cup setup as `ClassifyLiquid`, but success is placing the target liquid's cup **on** a catalog place target (default `plate`) — contact, cup above the surface, and XY centers within ~3 cm (LIBERO-style `On`). The place target is odorless. Scripted smell→decide→place: [scripted-odor-place-collection.md](scripted-odor-place-collection.md).
+- **`OdorPlace`**: Vision-only pick-and-place of a catalog mug onto a plate (no odor classes). Scripted OpenVLA-OFT demos: [scripted-collection.md](scripted-collection.md).
 
 
 ```python

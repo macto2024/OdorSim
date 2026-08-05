@@ -48,6 +48,15 @@ class OdorManipulationEnv(ManipulationEnv):
         frame_map: explicit FrameMap (overrides scenario_config_dir).
     """
 
+    # Default agentview framing: pulled back + widened vs stock robosuite
+    # (0.5/0/1.35, fovy 45) so a table-wide ±spawn_half box stays in frame.
+    # Subclasses with a tighter spawn box should override these — distance and
+    # FOV trade directly against how many pixels a centimetre of height moves,
+    # which is what a policy reads to decide when to stop descending.
+    agentview_pos = (0.575, 0.0, 1.45)
+    agentview_quat = (0.653, 0.271, 0.271, 0.653)
+    agentview_fovy = 52.5
+
     def __init__(
         self,
         robots="Panda",
@@ -86,7 +95,17 @@ class OdorManipulationEnv(ManipulationEnv):
         renderer="mjviewer",
         renderer_config=None,
         seed=None,
+        agentview_pos=None,
+        agentview_quat=None,
+        agentview_fovy=None,
     ):
+        if agentview_pos is not None:
+            self.agentview_pos = tuple(float(v) for v in agentview_pos)
+        if agentview_quat is not None:
+            self.agentview_quat = tuple(float(v) for v in agentview_quat)
+        if agentview_fovy is not None:
+            self.agentview_fovy = float(agentview_fovy)
+
         self.instruction = instruction
         self.enose_site_offset = np.asarray(enose_site_offset, dtype=float).reshape(3)
 
@@ -171,13 +190,11 @@ class OdorManipulationEnv(ManipulationEnv):
             table_offset=self.table_offset,
         )
         mujoco_arena.set_origin([0, 0, 0])
-        # Pull agentview back + widen FOV so the full spawn region stays in frame
-        # (stock robosuite: pos 0.5/0/1.35, fovy~45; midpoint with a farther framing).
         mujoco_arena.set_camera(
             camera_name="agentview",
-            pos=[0.575, 0.0, 1.45],
-            quat=[0.653, 0.271, 0.271, 0.653],
-            camera_attribs={"fovy": "52.5"},
+            pos=list(self.agentview_pos),
+            quat=list(self.agentview_quat),
+            camera_attribs={"fovy": str(float(self.agentview_fovy))},
         )
 
         self.odor_objects = self._make_odor_objects()
