@@ -129,19 +129,22 @@ def build_parser() -> argparse.ArgumentParser:
 @torch.no_grad()
 def _eval_acc(model, loader, device) -> dict:
     model.eval()
-    correct1 = correct5 = n = 0
+    correct1 = correct3 = correct5 = n = 0
     for x, y in loader:
         x = x.to(device)
         y = y.to(device)
         logits = model(x)
         pred = logits.argmax(dim=1)
         correct1 += (pred == y).sum().item()
-        k = min(5, logits.size(1))
-        topk = torch.topk(logits, k=k, dim=1).indices
-        correct5 += (topk == y.unsqueeze(1)).any(dim=1).sum().item()
+        n_cls = int(logits.size(1))
+        top3 = torch.topk(logits, k=min(3, n_cls), dim=1).indices
+        top5 = torch.topk(logits, k=min(5, n_cls), dim=1).indices
+        correct3 += (top3 == y.unsqueeze(1)).any(dim=1).sum().item()
+        correct5 += (top5 == y.unsqueeze(1)).any(dim=1).sum().item()
         n += y.numel()
     return {
         "acc@1": correct1 / max(n, 1),
+        "acc@3": correct3 / max(n, 1),
         "acc@5": correct5 / max(n, 1),
         "n": n,
     }
@@ -233,8 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(
         f"[train_scentformer] train acc@1={metrics['train']['acc@1']:.3f}  "
+        f"acc@3={metrics['train']['acc@3']:.3f}  "
+        f"acc@5={metrics['train']['acc@5']:.3f}  |  "
         f"val acc@1={metrics['val']['acc@1']:.3f}  "
-        f"val acc@5={metrics['val']['acc@5']:.3f}"
+        f"acc@3={metrics['val']['acc@3']:.3f}  "
+        f"acc@5={metrics['val']['acc@5']:.3f}"
     )
 
     ckpt = {
