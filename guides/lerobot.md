@@ -19,7 +19,7 @@ Replays each episode's ppm(t) through the MOX model twice:
 - **Continuous** → `enose_voltage_continuous`
 - **Sniffing** → `enose_voltage_sampling` (only while `enose_state == 1`)
 
-By default **every** MOX model is synthesized. Each model writes `features_<MODEL>.npz` / `features_meta_<MODEL>.json`; primary `TGS2620` is also mirrored into canonical `features.npz` / `features_meta.json` for LeRobot export.
+By default the fixed eight-sensor OVLA array is synthesized. Each model writes `features_<MODEL>.npz` / `features_meta_<MODEL>.json`; primary `101` is also mirrored into canonical `features.npz` / `features_meta.json` for LeRobot export.
 
 ```bash
 # One episode, single sensor only

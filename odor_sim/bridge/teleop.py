@@ -376,7 +376,7 @@ class TeleopSession:
         self.camera_size = int(camera_size)
         self.odor_mode = odor_mode
         self.mox_models = mox_models
-        self.mox_model = mox_models[0]  # display / primary hint; session picks TGS2620
+        self.mox_model = mox_models[0]  # display / primary hint; session prefers 101
         self.camera_map = (
             {f"{c}_image": _camera_dirname(c) for c in self.mining_cameras}
             if self.record_frames
@@ -1002,9 +1002,8 @@ def main(argv=None) -> int:
         nargs="*",
         default=None,
         metavar="MODEL",
-        help="MOX model(s) for live voltage. Omit = all five "
-        "(TGS2620 TGS2600 TGS2611 TGS2610 TGS2612). "
-        "Example: --mox-model TGS2620 TGS2600",
+        help="MOX model(s) for live voltage. Omit = the fixed eight-sensor OVLA "
+        "array. Example: --mox-model 101 TGS2600",
     )
     parser.add_argument(
         "--vcc",

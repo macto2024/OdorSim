@@ -29,6 +29,10 @@ class GasType(IntEnum):
     carbon_dioxide = 11
     carbon_monoxide = 12
     smoke = 13
+    methanol = 14
+    acetic_acid = 15
+    ethyl_acetate = 16
+    toluene = 17
 
 
 # GADEN's ``to_string`` spellings, keyed by GasType. Kept separate from the
@@ -50,11 +54,14 @@ GADEN_GAS_NAMES: dict[GasType, str] = {
     GasType.carbon_dioxide: "carbonDioxide",
     GasType.carbon_monoxide: "carbonMonoxide",
     GasType.smoke: "smoke",
+    GasType.methanol: "methanol",
+    GasType.acetic_acid: "acetic_acid",
+    GasType.ethyl_acetate: "ethyl_acetate",
+    GasType.toluene: "toluene",
 }
 
-# The stock MOX sensor model (fake_gas_sensor.cpp) only has response tables for
-# these gases. VOC recipes intended for the e-nose must use this set unless the
-# sensor tables are extended.
+# Gas types that OdorSim's calibrated Python MOX array may consume. The legacy
+# GADEN fake_gas_sensor.cpp remains unchanged; it is not used for these curves.
 MOX_SUPPORTED: frozenset[GasType] = frozenset(
     {
         GasType.ethanol,
@@ -64,6 +71,10 @@ MOX_SUPPORTED: frozenset[GasType] = frozenset(
         GasType.chlorine,
         GasType.fluorine,
         GasType.acetone,
+        GasType.methanol,
+        GasType.acetic_acid,
+        GasType.ethyl_acetate,
+        GasType.toluene,
     }
 )
 

@@ -41,6 +41,14 @@ liquids:
     recipe: liquid_grape_juice
   wine:
     recipe: liquid_wine
+  methanol:
+    recipe: methanol_strong
+  acetic_acid:
+    recipe: acetic_acid_strong
+  ethyl_acetate:
+    recipe: ethyl_acetate_strong
+  toluene:
+    recipe: toluene_strong
   # Pure single-VOC classes (all 7 MOX gases × 0.3 / 0.7 / 1.0)
   ethanol0.3:
     recipe: liquid_ethanol0.3

@@ -6,6 +6,7 @@ voltage divider and an active-sampling state machine. Used both offline
 """
 
 from odor_sim.sensors.mox_pid import (
+    DEFAULT_MOX_MODELS,
     MOX_MODELS,
     ContinuousEnose,
     MOXSensor,
@@ -17,6 +18,7 @@ from odor_sim.sensors.mox_pid import (
 )
 
 __all__ = [
+    "DEFAULT_MOX_MODELS",
     "MOX_MODELS",
     "MOXSensor",
     "PIDSensor",

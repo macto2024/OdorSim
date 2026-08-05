@@ -57,6 +57,7 @@ Then optionally synthesize other MOX streams and convert to LeRobot — see [gui
 | [guides/co-simulation.md](guides/co-simulation.md) | Tasks + `odor_sim.make` options |
 | [guides/teleop.md](guides/teleop.md) | Recording demos (keyboard / SpaceMouse) |
 | [guides/odor-sniff-collection.md](guides/odor-sniff-collection.md) | Stationary odor-only MOX sniffs (ScentFormer) |
+| [guides/mox-sensors.md](guides/mox-sensors.md) | Excel calibration, runtime curves, gases, and validation |
 | [guides/lerobot.md](guides/lerobot.md) | Synthesize → LeRobot export |
 | [guides/gaden-server.md](guides/gaden-server.md) | Manual GADEN RT server |
 | [guides/scripted-collection.md](guides/scripted-collection.md) | Scripted vision `OdorPlace` (`collect_place_oft`) |

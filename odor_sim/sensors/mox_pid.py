@@ -11,10 +11,9 @@ produces sensor resistance / voltage. Used two ways:
 
 MOX model (per gas ``g`` at concentration ``c`` ppm)::
 
-    RS/R0 = A_g * c ^ B_g                       (line in loglog scale)
-    RS/R0 clamped to <= Sensitivity_Air (baseline in clean air)
-    resistance_variation = sum_g (Sensitivity_Air - RS/R0_g)   (mixture)
-    RS/R0 = Sensitivity_Air - resistance_variation  (>= 0.01)
+    excess_conductance_g = K_g * c ^ n_g
+    G/Gair = 1 + sum_g(excess_conductance_g)     (mixture)
+    RS/R0 = Sensitivity_Air / (G/Gair)           (>= 0.01)
     transient: low-pass filter with tau_rise / tau_decay
     Rs = (RS/R0) * R0                            (ohms)
 
@@ -24,16 +23,17 @@ Voltage divider (our addition; GADEN publishes raw ohms)::
 
 PID model: weighted ppm sum (optional per-gas correction factors).
 
-Sensor characterization constants are copied verbatim from
-``gaden/simulated_gas_sensor/src/fake_gas_sensor.h`` (TGS2620/2600/2611/2610/
-2612 and the miniRAE-Lite PID). Gas indices match GADEN's ``GasType`` enum
-(ethanol=0 ... acetone=6), so a :class:`~odor_sim.config.gas_types.GasType`
-integer *is* the row index into the sensitivity tables.
+Active MOX characterization is loaded from the generated Excel calibration
+registry. The former stock GADEN values remain below only as comments. PID
+correction factors still follow the stock miniRAE-Lite model.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
 
 from odor_sim.config.gas_types import GasType, parse_gas_type
 
@@ -41,83 +41,56 @@ from odor_sim.config.gas_types import GasType, parse_gas_type
 # MOX characterization (from fake_gas_sensor.h). Row order per model:
 #   ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone
 # ---------------------------------------------------------------------------- #
-MOX_MODELS = ("TGS2620", "TGS2600", "TGS2611", "TGS2610", "TGS2612")
+# Stock GADEN reference only; these comments are never loaded:
+# model     R0 [ohm]  air Rs/R0  tau rise/decay [s]
+# TGS2620       3000        21.0       2.96 / 15.71
+# TGS2600      50000         1.0       4.80 / 18.75
+# TGS2611       3740         8.8       3.44 /  6.35
+# TGS2610       3740        10.3       3.44 /  6.35
+# TGS2612       4500        19.5       3.44 /  6.35
+#
+# Stock GADEN (A, B) for Rs/R0 = A * concentration**B, in gas order:
+# ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone
+# TGS2620: (62.32,-.7155), (120.6,-.4877), (24.45,-.5546),
+#          (120.6,-.4877), (120.6,-.4877), (120.6,-.4877), (120.6,-.4877)
+# TGS2600: (.6796,-.3196), (1.018,-.07284), (.6821,-.3532),
+#          (1.018,-.07284), (1.018,-.07284), (1.018,-.07284), (1.018,-.07284)
+# TGS2611: (51.11,-.3658), (38.46,-.4289), (41.3,-.3614),
+#          (38.46,-.4289), (38.46,-.4289), (38.46,-.4289), (38.46,-.4289)
+# TGS2610: (106.1,-.5008), (63.91,-.5372), (66.78,-.4888),
+#          (63.91,-.5372), (63.91,-.5372), (63.91,-.5372), (63.91,-.5372)
+# TGS2612: (31.35,-.09115), (146.2,-.5916), (19.5,0.0),
+#          (146.2,-.5916), (146.2,-.5916), (146.2,-.5916), (146.2,-.5916)
+#
+# Active parameters come exclusively from config/mox_sensors.yaml. TGS2612 is
+# absent because it was not present in the supplied Excel calibration data.
+_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "config" / "mox_sensors.yaml"
+with _REGISTRY_PATH.open("r", encoding="utf-8") as _stream:
+    _MOX_REGISTRY = yaml.safe_load(_stream)
+MOX_MODELS = tuple(_MOX_REGISTRY["nominal_models"])
+DEFAULT_MOX_MODELS = (
+    "101",
+    "203",
+    "302",
+    "401",
+    "TGS2600",
+    "TGS2602",
+    "TGS2610",
+    "TGS2611",
+)
+_MOX_PROFILES = _MOX_REGISTRY["models"]
 
-# Reference resistance R0 [ohms]
-_R0 = {
-    "TGS2620": 3000.0,
-    "TGS2600": 50000.0,
-    "TGS2611": 3740.0,
-    "TGS2610": 3740.0,
-    "TGS2612": 4500.0,
-}
+if not set(DEFAULT_MOX_MODELS).issubset(MOX_MODELS):
+    raise RuntimeError("default MOX array contains a model absent from the registry")
 
-# RS/R0 in clean air (baseline)
-_SENSITIVITY_AIR = {
-    "TGS2620": 21.0,
-    "TGS2600": 1.0,
-    "TGS2611": 8.8,
-    "TGS2610": 10.3,
-    "TGS2612": 19.5,
-}
 
-# (tau_rise, tau_decay) seconds; identical across gases in the stock model
-_TAU = {
-    "TGS2620": (2.96, 15.71),
-    "TGS2600": (4.8, 18.75),
-    "TGS2611": (3.44, 6.35),
-    "TGS2610": (3.44, 6.35),
-    "TGS2612": (3.44, 6.35),
-}
+def get_mox_profile(model: str) -> dict:
+    """Return one calibrated profile; callers must treat it as read-only."""
+    try:
+        return _MOX_PROFILES[model]
+    except KeyError as exc:
+        raise ValueError(f"Unknown MOX model {model!r}; choose from {MOX_MODELS}") from exc
 
-# RS/R0 = A * conc^B ; (A, B) per gas index 0..6
-_SENSITIVITY_LINELOGLOG = {
-    "TGS2620": [
-        (62.32, -0.7155),  # ethanol
-        (120.6, -0.4877),  # methane
-        (24.45, -0.5546),  # hydrogen
-        (120.6, -0.4877),  # propanol
-        (120.6, -0.4877),  # chlorine
-        (120.6, -0.4877),  # fluorine
-        (120.6, -0.4877),  # acetone
-    ],
-    "TGS2600": [
-        (0.6796, -0.3196),
-        (1.018, -0.07284),
-        (0.6821, -0.3532),
-        (1.018, -0.07284),
-        (1.018, -0.07284),
-        (1.018, -0.07284),
-        (1.018, -0.07284),
-    ],
-    "TGS2611": [
-        (51.11, -0.3658),
-        (38.46, -0.4289),
-        (41.3, -0.3614),
-        (38.46, -0.4289),
-        (38.46, -0.4289),
-        (38.46, -0.4289),
-        (38.46, -0.4289),
-    ],
-    "TGS2610": [
-        (106.1, -0.5008),
-        (63.91, -0.5372),
-        (66.78, -0.4888),
-        (63.91, -0.5372),
-        (63.91, -0.5372),
-        (63.91, -0.5372),
-        (63.91, -0.5372),
-    ],
-    "TGS2612": [
-        (31.35, -0.09115),
-        (146.2, -0.5916),
-        (19.5, 0.0),
-        (146.2, -0.5916),
-        (146.2, -0.5916),
-        (146.2, -0.5916),
-        (146.2, -0.5916),
-    ],
-}
 
 # PID correction factors (index 0..6). 0.0 means the PID is blind to that gas.
 _PID_CORRECTION_FACTORS = [10.47, 0.0, 0.0, 2.7, 1.0, 0.0, 1.4]
@@ -133,34 +106,39 @@ def _normalize_ppm(ppm_by_gas: dict) -> dict:
 
 
 class MOXSensor:
-    """A single MOX gas sensor with GADEN's loglog sensitivity + transient.
+    """A MOX sensor with calibrated conductance sensitivity and transients.
 
     Args:
-        model: one of :data:`MOX_MODELS`.
-        rate: control frequency (Hz); sets the transient low-pass alpha exactly
-            as the stock node's ``node_rate``.
+        model: a median-first nominal sensor id in :data:`MOX_MODELS`.
+        rate: control frequency (Hz) used by the transient low-pass filter.
         load_resistance: RL [ohms] for the voltage divider. Defaults to the
-            model's R0, giving a monotone 0..Vcc reading that rises with
-            concentration. A modeling parameter (GADEN itself outputs raw ohms).
+            model's calibrated RL (0.25 * its late-air reference), giving 1 V
+            in clean air at Vcc=5 V. GADEN itself outputs raw ohms.
         vcc: supply voltage for the divider (V).
     """
 
     def __init__(
         self,
-        model: str = "TGS2620",
+        model: str = DEFAULT_MOX_MODELS[0],
         rate: float = 20.0,
         load_resistance: "float | None" = None,
         vcc: float = 5.0,
     ):
-        if model not in MOX_MODELS:
-            raise ValueError(f"Unknown MOX model {model!r}; choose from {MOX_MODELS}")
+        profile = get_mox_profile(model)
         self.model = model
         self.rate = float(rate)
-        self.R0 = _R0[model]
-        self.sensitivity_air = _SENSITIVITY_AIR[model]
-        self.tau_rise, self.tau_decay = _TAU[model]
-        self._sens = _SENSITIVITY_LINELOGLOG[model]
-        self.load_resistance = float(load_resistance) if load_resistance is not None else self.R0
+        self.R0 = float(profile["r0_ohm"])
+        self.sensitivity_air = float(profile["sensitivity_air"])
+        self.tau_rise = float(profile["tau_rise_s"])
+        self.tau_decay = float(profile["tau_decay_s"])
+        self._sens = profile["sensitivity"]
+        self._concentration_range = tuple(
+            float(value) for value in profile["concentration_range_ppm"]
+        )
+        configured_rl = profile.get("load_resistance_ohm")
+        # The registry carries the divider value derived from its air reference.
+        default_rl = self.R0 if configured_rl is None else float(configured_rl)
+        self.load_resistance = float(load_resistance) if load_resistance is not None else default_rl
         self.vcc = float(vcc)
         self.reset()
 
@@ -169,30 +147,49 @@ class MOXSensor:
         self._rs_r0 = self.sensitivity_air
         self._prev = self.sensitivity_air
         self._first = True
+        self._last_decay_tau = self.tau_decay
 
     # -- ideal (steady-state) response, no transient -- #
-    def _ideal_rs_r0(self, ppm_by_gas: dict) -> float:
-        resistance_variation = 0.0
+    def _ideal_response(
+        self, ppm_by_gas: dict
+    ) -> tuple[float, list[tuple[dict, float]]]:
+        excess_conductance_total = 0.0
+        components = []
         for gt, conc in _normalize_ppm(ppm_by_gas).items():
-            idx = int(gt)
-            if not 0 <= idx <= 6:
-                raise ValueError(f"MOX sensor is not configured for gas {gt.name!r}")
-            if conc <= 0.0:
+            curve = self._sens.get(gt.name)
+            # G3 is deferred: gases without a measured workbook curve are ignored.
+            if curve is None or not curve.get("runtime_supported", False) or conc <= 0.0:
                 continue
-            a, b = self._sens[idx]
-            rs_r0 = a * (conc ** b)
-            if rs_r0 > self.sensitivity_air:
-                rs_r0 = self.sensitivity_air
-            resistance_variation += self.sensitivity_air - rs_r0
-        rs_r0 = self.sensitivity_air - resistance_variation
-        return max(rs_r0, 0.01)
+            _, high = self._concentration_range
+            coefficient = float(curve["coefficient_k"])
+            exponent = float(curve["exponent_n"])
+            excess_conductance = coefficient * min(conc, high) ** exponent
+            excess_conductance_total += excess_conductance
+            components.append((curve, excess_conductance))
+        rs_r0 = self.sensitivity_air / (1.0 + excess_conductance_total)
+        return max(rs_r0, 0.01), components
+
+    def _ideal_rs_r0(self, ppm_by_gas: dict) -> float:
+        return self._ideal_response(ppm_by_gas)[0]
+
+    def _effective_tau(
+        self, components: list[tuple[dict, float]], direction: str
+    ) -> float:
+        fallback = self.tau_rise if direction == "rise" else self.tau_decay
+        total_weight = sum(weight for _, weight in components)
+        if total_weight <= 0.0:
+            return fallback
+        return sum(
+            float(curve.get(f"tau_{direction}_s", fallback)) * weight
+            for curve, weight in components
+        ) / total_weight
 
     def update(self, ppm_by_gas: dict) -> float:
         """Advance one control step; returns sensor resistance Rs [ohms].
 
-        Mirrors ``simulate_mox_as_line_loglog``: the first call latches the
-        baseline (no gas response), subsequent calls apply the sensitivity
-        curve then a rise/decay low-pass filter.
+        The first call latches the baseline. Subsequent calls apply the
+        conductance sensitivity curve then the resistance-domain rise/decay
+        low-pass filter calibrated from the workbook resistance traces.
         """
         if self._first:
             self._rs_r0 = self.sensitivity_air
@@ -200,8 +197,14 @@ class MOXSensor:
             self._first = False
             return self.resistance
 
-        ideal = self._ideal_rs_r0(ppm_by_gas)
-        tau = self.tau_rise if ideal < self._prev else self.tau_decay
+        ideal, components = self._ideal_response(ppm_by_gas)
+        if ideal < self._prev:
+            tau = self._effective_tau(components, "rise")
+            self._last_decay_tau = self._effective_tau(components, "decay")
+        else:
+            # Once the plume disappears there are no current gas weights, so
+            # recovery keeps the dynamics of the most recent exposure.
+            tau = self._last_decay_tau
         dt = 1.0 / self.rate
         alpha = dt / (tau + dt)
         self._rs_r0 = alpha * ideal + (1.0 - alpha) * self._prev

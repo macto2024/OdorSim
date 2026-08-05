@@ -3,7 +3,8 @@
 # Each named recipe is a list of VOC components emitted by an object. Every
 # component becomes one co-located GADEN source. gas_type must be one of the
 # MOX-supported gases for the e-nose to read it:
-#   ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone
+#   ethanol, methane, hydrogen, propanol, chlorine, fluorine, acetone,
+#   methanol, acetic_acid, ethyl_acetate, toluene
 #
 # strength is an abstract 0..1 emission knob (mapped to GADEN
 # filamentPPMcenter / numFilaments_sec in odor_sim/envs/odor_profile.py).
@@ -17,6 +18,22 @@ recipes:
     - {gas_type: ethanol, strength: 0.3}
   acetone_strong:
     - {gas_type: acetone, strength: 1.0}
+  methanol_strong:
+    - {gas_type: methanol, strength: 1.0}
+  methanol_weak:
+    - {gas_type: methanol, strength: 0.3}
+  acetic_acid_strong:
+    - {gas_type: acetic_acid, strength: 1.0}
+  acetic_acid_weak:
+    - {gas_type: acetic_acid, strength: 0.3}
+  ethyl_acetate_strong:
+    - {gas_type: ethyl_acetate, strength: 1.0}
+  ethyl_acetate_weak:
+    - {gas_type: ethyl_acetate, strength: 0.3}
+  toluene_strong:
+    - {gas_type: toluene, strength: 1.0}
+  toluene_weak:
+    - {gas_type: toluene, strength: 0.3}
 
   # Multi-VOC mixtures (fruit-like: ethanol + acetone esters)
   ripe_fruit:

@@ -1,0 +1,61 @@
+diff --git a/include/gaden/datatypes/GasTypes.hpp b/include/gaden/datatypes/GasTypes.hpp
+index 423efb2..09a6445 100644
+--- a/include/gaden/datatypes/GasTypes.hpp
++++ b/include/gaden/datatypes/GasTypes.hpp
+@@ -25,7 +25,11 @@ namespace gaden
+         butane              = 10,
+         carbonDioxide       = 11,
+         carbonMonoxide      = 12,
+-        smoke               = 13
++        smoke               = 13,
++        methanol            = 14,
++        acetic_acid         = 15,
++        ethyl_acetate       = 16,
++        toluene             = 17
+     };
+     // clang-format on
+ 
+@@ -33,7 +37,7 @@ namespace gaden
+     // SpecificGravity(Air) = 1 (as reference)
+     // Specific gravity is the ratio of the density of a substance to the density of a reference substance; equivalently,
+     // it is the ratio of the mass of a substance to the mass of a reference substance for the same given volume.
+-    constexpr std::array<float, 14> SpecificGravity = {
++    constexpr std::array<float, 18> SpecificGravity = {
+         1.0378, // ethanol   (heavier than air)
+         0.5537, // methane   (lighter than air)
+         0.0696, // hydrogen  (lighter than air)
+@@ -47,7 +51,11 @@ namespace gaden
+         2.0061, // butane
+         1.52,   // carbon dioxide
+         0.967,  // carbon monoxide
+-        0.89    // smoke
++        0.89,   // smoke
++        1.106,  // methanol (molar mass / dry-air molar mass)
++        2.073,  // acetic acid
++        3.041,  // ethyl acetate
++        3.181   // toluene
+     };
+ 
+     inline std::string to_string(GasType type)
+@@ -84,6 +92,14 @@ namespace gaden
+             return "carbonMonoxide";
+         case GasType::smoke:
+             return "smoke";
++        case GasType::methanol:
++            return "methanol";
++        case GasType::acetic_acid:
++            return "acetic_acid";
++        case GasType::ethyl_acetate:
++            return "ethyl_acetate";
++        case GasType::toluene:
++            return "toluene";
+         }
+ 
+         GADEN_ERROR("Invalid gas type: {}", (int)type);
+@@ -91,4 +107,4 @@ namespace gaden
+         return "";
+     }
+ 
+-} // namespace gaden
+\ No newline at end of file
++} // namespace gaden

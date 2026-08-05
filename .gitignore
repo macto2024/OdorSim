@@ -24,9 +24,9 @@ log/
 # --- Deprecated playground (kept locally for cherry-picking, not tracked) ---
 /simulation/
 
-# --- Local-only docs / setup notes / tests (kept on disk, not in git) ---
-/docs/
-/tests/
+# --- Local-only docs / setup notes ---
+/docs/*
+!/docs/mox_calibration_report.md
 /SETUP.md
 /VNC_SETUP.md
 /setup_gaden.sh
@@ -42,6 +42,7 @@ __pycache__/
 
 # --- Datasets & large artifacts ---
 /datasets/
+/analysis/
 *.mp4
 MUJOCO_LOG.TXT
 

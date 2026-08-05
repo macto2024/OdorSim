@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from odor_sim.runtime.session import FILTER, IDLE, SAMPLE, resolve_mox_models
-from odor_sim.sensors.mox_pid import MOX_MODELS
+from odor_sim.sensors.mox_pid import DEFAULT_MOX_MODELS
 
 # OSC_POSE maps action in [-1, 1] -> EE delta in meters (BASIC default ±0.05 m).
 _OSC_POS_SCALE = 0.05
@@ -764,7 +764,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mox-model",
         nargs="+",
         default=None,
-        help=f"MOX models to record (default: all of {list(MOX_MODELS)}).",
+        help=f"MOX models to record (default: {list(DEFAULT_MOX_MODELS)}).",
     )
     p.add_argument(
         "--out-dir",

@@ -18,17 +18,17 @@ Because synthesis is a pure function of the stored ``ppm`` + ``enose_state``, it
 is fully re-runnable: change the MOX model / load resistor / Vcc and re-run to
 get different voltages without re-mining.
 
-By default (no ``--mox-model``) every model in
-:data:`odor_sim.sensors.mox_pid.MOX_MODELS` is synthesized, writing one
+By default (no ``--mox-model``) the fixed OVLA array in
+:data:`odor_sim.sensors.mox_pid.DEFAULT_MOX_MODELS` is synthesized, writing one
 ``features_<MODEL>.npz`` / ``features_meta_<MODEL>.json`` pair per model plus a
 canonical ``features.npz`` / ``features_meta.json`` for the primary model
-(``TGS2620``) that downstream conversion consumes. Passing ``--mox-model X``
+(``101``) that downstream conversion consumes. Passing ``--mox-model X``
 synthesizes only model ``X`` into the canonical ``features.npz``.
 
 Usage::
 
     source setup/activate.sh
-    python -m odor_sim.recording.synthesize datasets/teleop          # all models
+    python -m odor_sim.recording.synthesize datasets/teleop          # fixed eight
     python -m odor_sim.recording.synthesize datasets/teleop/episode_20260708_170047 \\
         --mox-model TGS2600 --vcc 5.0                                # single model
 """
@@ -43,6 +43,7 @@ import numpy as np
 
 from odor_sim.config.gas_types import GADEN_GAS_NAMES
 from odor_sim.sensors.mox_pid import (
+    DEFAULT_MOX_MODELS,
     MOX_MODELS,
     MOXSensor,
     synthesize_continuous,
@@ -82,7 +83,7 @@ def _window_record(window, rate: float) -> dict:
 #: Canonical (model-agnostic) output basename consumed by :mod:`convert`.
 CANONICAL_NAME = "features"
 #: Primary model mirrored into :data:`CANONICAL_NAME` when synthesizing many.
-PRIMARY_MOX_MODEL = MOX_MODELS[0]
+PRIMARY_MOX_MODEL = DEFAULT_MOX_MODELS[0]
 
 
 def _write_features(
@@ -152,7 +153,7 @@ def synthesize_episode(
     Args:
         ep_dir: raw episode dir (must contain ``episode.npz`` + ``meta.json``).
         mox_model: MOX model id (see :data:`odor_sim.sensors.mox_pid.MOX_MODELS`).
-        load_resistance: voltage-divider RL [ohms]; defaults to the model's R0.
+        load_resistance: voltage-divider RL [ohms]; defaults to the model's calibrated divider value.
         vcc: divider supply voltage (V).
         rate: control frequency (Hz) for the sensor transient; defaults to the
             episode's ``control_freq`` meta (or 20).
@@ -288,9 +289,9 @@ def synthesize_episode_models(
 
     Args:
         ep_dir: raw episode dir (must contain ``episode.npz`` + ``meta.json``).
-        mox_models: models to synthesize; defaults to all of
-            :data:`odor_sim.sensors.mox_pid.MOX_MODELS`.
-        load_resistance: voltage-divider RL [ohms]; defaults to each model's R0.
+        mox_models: models to synthesize; defaults to
+            :data:`odor_sim.sensors.mox_pid.DEFAULT_MOX_MODELS`.
+        load_resistance: voltage-divider RL [ohms]; defaults to each model's calibrated divider value.
         vcc: divider supply voltage (V).
         rate: control frequency (Hz); defaults to the episode's ``control_freq``.
         overwrite: if False, skip a model whose primary output already exists.
@@ -298,7 +299,7 @@ def synthesize_episode_models(
     Returns:
         Primary ``.npz`` path written for each synthesized model.
     """
-    models = list(mox_models) if mox_models else list(MOX_MODELS)
+    models = list(mox_models) if mox_models else list(DEFAULT_MOX_MODELS)
     if not models:
         raise ValueError("no MOX models to synthesize")
 
@@ -346,15 +347,15 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mox-model",
         default=None,
-        choices=list(MOX_MODELS),
-        help="MOX sensor model; default synthesizes ALL models "
-        f"({', '.join(MOX_MODELS)})",
+        metavar="MODEL",
+        help="MOX sensor model; default synthesizes the fixed OVLA array "
+        f"({', '.join(DEFAULT_MOX_MODELS)})",
     )
     parser.add_argument(
         "--load-resistance",
         type=float,
         default=None,
-        help="voltage-divider RL [ohms] (default: model R0)",
+        help="voltage-divider RL [ohms] (default: calibrated model RL)",
     )
     parser.add_argument("--vcc", type=float, default=5.0, help="divider supply voltage (V)")
     parser.add_argument(
@@ -369,6 +370,11 @@ def main(argv=None) -> int:
         help="skip episodes that already have features.npz",
     )
     args = parser.parse_args(argv)
+    if args.mox_model is not None and args.mox_model not in MOX_MODELS:
+        parser.error(
+            f"unknown MOX model {args.mox_model!r}; see "
+            "odor_sim/config/mox_sensors.yaml for valid nominal sensor ids"
+        )
 
     episodes: list[Path] = []
     for p in args.paths:
@@ -377,7 +383,7 @@ def main(argv=None) -> int:
         print("[synth] no episodes found")
         return 1
 
-    mox_models = [args.mox_model] if args.mox_model else list(MOX_MODELS)
+    mox_models = [args.mox_model] if args.mox_model else list(DEFAULT_MOX_MODELS)
     for ep in episodes:
         synthesize_episode_models(
             ep,

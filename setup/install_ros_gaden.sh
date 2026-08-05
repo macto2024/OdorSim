@@ -84,6 +84,20 @@ git submodule update --init gaden_common/third_party/gaden_core
 git -C gaden_common/third_party/gaden_core submodule update --init \
   third_party/yaml-cpp third_party/compute third_party/libbsc third_party/DDA
 
+# OdorSim uses four workbook gases that upstream GADEN does not define. Keep
+# this as a tracked patch because gaden/ itself is an ignored dependency clone.
+GADEN_CORE_DIR="$GADEN_DIR/gaden_common/third_party/gaden_core"
+GAS_PATCH="$REPO_ROOT/patches/gaden_core_add_excel_gases.patch"
+if git -C "$GADEN_CORE_DIR" apply --reverse --check "$GAS_PATCH" >/dev/null 2>&1; then
+  echo "==> OdorSim gas patch already applied."
+elif git -C "$GADEN_CORE_DIR" apply --check "$GAS_PATCH"; then
+  git -C "$GADEN_CORE_DIR" apply "$GAS_PATCH"
+  echo "==> Applied OdorSim gas patch."
+else
+  echo "ERROR: cannot apply $GAS_PATCH to the checked-out gaden_core revision." >&2
+  exit 1
+fi
+
 # ---------------- 3b. GLM (needed by DDA, NOT a registered submodule) ----------------
 GLM_DIR="$GADEN_DIR/gaden_common/third_party/gaden_core/third_party/DDA/third_party/glm"
 if [ ! -f "$GLM_DIR/glm/common.hpp" ]; then

@@ -21,7 +21,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff"]
+analysis = ["matplotlib", "scipy"]
+
+[tool.setuptools.package-data]
+odor_sim = ["config/*.yaml"]
 
 [tool.setuptools.packages.find]
 include = ["odor_sim*"]
 exclude = ["gaden*", "ros2_ws*", "simulation*", "scenarios*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

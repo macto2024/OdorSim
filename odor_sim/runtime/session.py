@@ -12,11 +12,11 @@ post-step source poses, ticks GADEN one step in lockstep, and queries the
 ground-truth per-gas ppm at the EE, which is returned in ``info``.
 
 When ``odor_mode`` is ``continuous`` or ``discrete``, the session streams MOX
-e-nose voltage into ``info``. By default **all** models in
-:data:`~odor_sim.sensors.mox_pid.MOX_MODELS` run in parallel:
+e-nose voltage into ``info``. By default the models in
+:data:`~odor_sim.sensors.mox_pid.DEFAULT_MOX_MODELS` run in parallel:
 
   * ``info["enose_voltages"]`` — ``{model: voltage}`` for every active sensor
-  * ``info["enose_voltage"]`` — primary model scalar (``TGS2620`` when present,
+  * ``info["enose_voltage"]`` — primary model scalar (``101`` when present,
     else the first selected model) for ``/act`` / back-compat
 
 Modes are mutually exclusive (continuous vs discrete), not multi-stream of both
@@ -31,11 +31,11 @@ from typing import Any, Sequence, Union
 import numpy as np
 
 from odor_sim.config.gas_types import GADEN_GAS_NAMES
-from odor_sim.sensors.mox_pid import MOX_MODELS, ContinuousEnose, SamplingEnose
+from odor_sim.sensors.mox_pid import DEFAULT_MOX_MODELS, MOX_MODELS, ContinuousEnose, SamplingEnose
 
 ODOR_MODES = ("none", "continuous", "discrete")
 SAMPLE, IDLE, FILTER = 1, 0, -1
-PRIMARY_MOX_MODEL = MOX_MODELS[0]  # TGS2620 — matches offline synthesize
+PRIMARY_MOX_MODEL = DEFAULT_MOX_MODELS[0]
 
 
 def resolve_mox_models(
@@ -43,22 +43,31 @@ def resolve_mox_models(
 ) -> list[str]:
     """Normalize a ``mox_model`` spec to an ordered list of valid MOX ids.
 
-    ``None``, ``\"all\"``, or an empty sequence → all of :data:`MOX_MODELS`.
+    ``None`` or an empty sequence selects :data:`DEFAULT_MOX_MODELS`.
+    ``\"all\"`` explicitly selects all supported :data:`MOX_MODELS`.
     A comma-separated string or a sequence selects a subset (order preserved,
     duplicates dropped). Primary preference for ``enose_voltage`` is
     :data:`PRIMARY_MOX_MODEL` when it is in the list, else the first entry.
     """
     if mox_model is None:
-        return list(MOX_MODELS)
+        return list(DEFAULT_MOX_MODELS)
     if isinstance(mox_model, str):
         text = mox_model.strip()
-        if not text or text.lower() == "all":
+        if not text:
+            return list(DEFAULT_MOX_MODELS)
+        if text.lower() == "all":
             return list(MOX_MODELS)
         models = [p.strip() for p in text.split(",") if p.strip()]
     else:
         models = [str(p).strip() for p in mox_model if str(p).strip()]
+        if len(models) == 1 and models[0].lower() == "all":
+            return list(MOX_MODELS)
+        if any(name.lower() == "all" for name in models):
+            raise ValueError(
+                "'all' cannot be combined with explicit MOX model names"
+            )
     if not models:
-        return list(MOX_MODELS)
+        return list(DEFAULT_MOX_MODELS)
     out: list[str] = []
     for name in models:
         if name not in MOX_MODELS:
@@ -149,10 +158,10 @@ class OdorCosimSession:
         odor_monitor: optional :class:`~odor_sim.runtime.odor_monitor.OdorMonitor`.
         sensor_monitor: optional :class:`~odor_sim.runtime.sensor_monitor.SensorMonitor`.
         odor_mode: ``none`` | ``continuous`` | ``discrete`` live voltage path.
-        mox_model: MOX model id(s) to stream. ``None`` / ``\"all\"`` (default)
-            runs every model in :data:`MOX_MODELS` in parallel. A string, comma
+        mox_model: MOX model id(s) to stream. ``None`` uses the fixed eight-sensor
+            OVLA array; ``\"all\"`` runs every supported model. A string, comma
             list, or sequence selects a subset.
-        load_resistance: voltage-divider RL [ohms]; ``None`` uses each model R0.
+        load_resistance: voltage-divider RL [ohms]; ``None`` uses each model's calibrated divider value.
         vcc: divider supply voltage (V).
         enose_rate: sensor update rate (Hz); defaults to env ``control_freq``.
     """

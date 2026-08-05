@@ -82,7 +82,7 @@ datasets/odor_sniffs/voc6_continuous/
 
 | Array | Shape | Notes |
 |-------|-------|--------|
-| `voltages` | `(T, C)` | MOX voltages; columns = `mox_models` (default all 5 TGS) |
+| `voltages` | `(T, C)` | MOX voltages; columns = `mox_models` (default fixed eight-sensor OVLA array) |
 | `ppm` | `(T, G)` | Ground-truth ppm at EE |
 | `enose_state` | `(T,)` | `1` SAMPLE / `0` IDLE / `-1` FILTER |
 | `sim_time` | `(T,)` | GADEN sim time |
@@ -104,7 +104,7 @@ datasets/odor_sniffs/voc6_continuous/
 | `--num-workers` | 1 | Parallel processes (each owns a ROS domain + GADEN) |
 | `--ros-domain-base` | 40 | Worker i uses `ROS_DOMAIN_ID=base+i` |
 | `--control-freq` | 20 | Sensor / control rate (Hz) |
-| `--mox-model` | all five | Subset of TGS models if desired |
+| `--mox-model` | fixed eight | Sensor subset; `all` selects all 17 supported models |
 | `--approach-target` | on | OSC move above source, then hold |
 | `--no-approach-target` | | Hold at reset EE pose |
 | `--window-s` / `--stride-s` | 10 / 5 | Set `--window-s 0` to skip window export |
@@ -128,7 +128,7 @@ PYTHONPATH=/root/OdorSim /root/SmellNet/.venv/bin/python -m odor_sim.bridge.trai
 
 This:
 
-1. Loads `X (N, 200, 5)`, `y`, `sniff_id`, `label_names`
+1. Loads `X (N, 200, 8)`, `y`, `sniff_id`, `label_names`
 2. Splits **train/val by sniff id** (no window leakage)
 3. Standardizes channels on the train split
 4. Trains SmellNet's Transformer (ScentFormer) classifier
@@ -142,11 +142,11 @@ Optional: `--baseline-subtract` (subtract first timestep per window).
 - Keep **odor_mode** the same at train and eval.
 - Baseline subtract / standardize / temporal differencing belong in the **training** pipeline (SmellNet-style), not in this collector.
 - Pure VOC liquids and multi-VOC objects are different tasks — use separate `--out-dir` trees.
-- This is **sim TGS FakeGasSensor** data, not real MQ/Grove SmellNet hardware.
+- This is **simulated Excel-calibrated MOX** data, not real MQ/Grove SmellNet hardware.
 
 ## Considerations
 
 - **Geometry:** distance and plume intermittency dominate the voltage shape. Random object placement plus `--approach-target` give diversity.
-- **Transients:** MOX `tau_rise` is ~3–5 s; a 20 s sniff with 10 s windows is a reasonable starting point.
+- **Transients:** rise and recovery constants are sensor- and gas-specific workbook estimates; a 20 s sniff with 10 s windows is a starting point, not a universal rule.
 - **Cost:** each sniff starts a GADEN session. Use `--num-workers 4` (etc.) for parallel collection; keep renderer/cameras off (the script already does). Stop any serial run before switching to workers so `kill_all` / domain IDs stay clean.
 - **Labels:** liquid names from `odor_sim/config/liquids.yaml`; objects from `odor_sim/config/objects.yaml`.

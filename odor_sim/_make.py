@@ -30,8 +30,8 @@ Open decisions resolved for v1:
     already-running server and does not spawn or stop one.
   * **Observation contract:** ppm is exposed in ``info`` (not ``obs``). With
     ``odor_mode="continuous"|"discrete"``, live MOX voltage is streamed:
-    ``info["enose_voltages"]`` for every selected model (default: all five) and
-    ``info["enose_voltage"]`` as the primary scalar (``TGS2620`` when present).
+    ``info["enose_voltages"]`` for every selected model (default: the fixed eight-sensor OVLA array) and
+    ``info["enose_voltage"]`` as the primary scalar (``101`` when present).
 """
 
 from __future__ import annotations
@@ -192,12 +192,11 @@ def make(
         odor_mode: live voltage path — ``"none"`` (ppm only), ``"continuous"``
             (always-on MOX), or ``"discrete"`` (valve-gated by trailing
             ``enose_state`` on the action). Mutually exclusive streams.
-        mox_model: which MOX sensor(s) to stream. ``None`` / ``"all"`` (default)
-            runs every model in parallel (``TGS2620``, ``TGS2600``, ``TGS2611``,
-            ``TGS2610``, ``TGS2612``). Pass a model id, comma list, or list to
-            select a subset. Primary ``info["enose_voltage"]`` is ``TGS2620``
+        mox_model: which MOX sensor(s) to stream. ``None`` uses the fixed eight-sensor OVLA array; ``"all"`` runs all 17
+            supported Excel-calibrated families. Pass a model id, comma list, or list to
+            select a subset. Primary ``info["enose_voltage"]`` is ``101``
             when included, else the first selected model.
-        load_resistance: voltage-divider RL [ohms]; ``None`` uses each model R0.
+        load_resistance: voltage-divider RL [ohms]; ``None`` uses each model's calibrated divider value.
         vcc: divider supply voltage (V).
         kill_stale_gaden: if True (default), kill other ``rt_server`` processes
             before starting. Parallel collectors must set False and isolate via
