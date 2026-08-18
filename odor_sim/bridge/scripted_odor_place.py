@@ -1,22 +1,22 @@
-"""Scripted smell → decide → pick-place collector for ClassifyLiquidPlace.
+"""Scripted smell → decide → pick-place collector for ClassifyLiquidPlaceOVLA.
 
-Two cups with pure VOC liquids (e.g. ``ethanol1.0``, ``propanol1.0``). The arm
-hovers above each cup, SAMPLE-holds for ``sample_hold_s`` (default 10 s) so the
+Two identical porcelain cups with ScentFormer VOC liquids. The arm hovers
+above each cup, SAMPLE-holds for ``sniff_duration_s`` (default 10 s) so the
 e-nose can respond, then:
 
 * if that cup is the instructed liquid → grasp and place on the plate
-* otherwise → move aside, FILTER-hold for ``filter_hold_s`` (default 15 s), try
+* otherwise → move aside, FILTER-hold for ``1.5 * sniff_duration_s``, try
   the next cup
 * if no cup matches the instruction → return to the post-reset home pose
 
-Ground-truth identity (liquid object id) drives the scripted decision so demos
-are reliable; the recorded SAMPLE/FILTER voltages are what a policy must learn
-from. GADEN + ``odor_mode="discrete"`` are required.
+The first cup is uniformly random (``target_first_frac=0.5``). Ground-truth
+identity drives the scripted decision so demos are reliable; the recorded
+SAMPLE voltages are what a policy must learn from.
 
 Example::
 
     python -m odor_sim.bridge.scripted_odor_place \\
-        --liquids ethanol1.0 propanol1.0 --instructed ethanol1.0 \\
+        --liquids ethanol methanol --instructed ethanol \\
         --num-demos 5 --out-dir datasets/teleop/odor_place_scripted
 """
 
@@ -26,6 +26,7 @@ import argparse
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -52,16 +53,29 @@ from odor_sim.bridge.teleop import (
     _camera_dirname,
     _controller_type,
 )
+from odor_sim.recording.odor_config import (
+    DEFAULT_ODOR_CONFIG,
+    FILTER_DURATION_FACTOR,
+    OdorConfig,
+    odor_config_from_args,
+)
+from odor_sim.recording.odor_events import (
+    PHASE_CONTROL,
+    PHASE_FILTER_HOLD,
+    PHASE_SNIFF_HOLD,
+    write_odor_events,
+)
 from odor_sim.runtime.session import FILTER, IDLE, SAMPLE
 
 DEFAULT_OUT_DIR = "datasets/teleop/odor_place_scripted"
-DEFAULT_LIQUIDS = ("ethanol1.0", "propanol1.0")
-DEFAULT_SAMPLE_HOLD_S = 10.0
-DEFAULT_FILTER_HOLD_S = 15.0
+DEFAULT_LIQUIDS = DEFAULT_ODOR_CONFIG.voc_pool[:2]
+DEFAULT_SAMPLE_HOLD_S = DEFAULT_ODOR_CONFIG.sniff_duration_s
+DEFAULT_FILTER_HOLD_S = DEFAULT_ODOR_CONFIG.filter_s
 DEFAULT_SNIFF_Z = 0.12  # meters above cup body center
-DEFAULT_FILTER_OFFSET_Y = 0.18  # lateral retreat for purge
-# When the instructed VOC is on the table: P(sniff it first).
-DEFAULT_TARGET_FIRST_FRAC = 0.4
+DEFAULT_FILTER_OFFSET_Y = 0.0  # unused; FILTER hovers above the plate (in-frame)
+# When the instructed VOC is on the table: P(sniff it first). 0.5 = uniform.
+DEFAULT_TARGET_FIRST_FRAC = 0.5
+OVLA_ENV_NAME = "ClassifyLiquidPlaceOVLA"
 
 
 def liquid_display_name(catalog: str) -> str:
@@ -85,14 +99,14 @@ def build_instruction(instructed_liquid: str, place_target: str = "plate") -> st
 
 
 class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
-    """Smell-conditioned pick-place on :class:`ClassifyLiquidPlace`."""
+    """Smell-conditioned pick-place on :class:`ClassifyLiquidPlaceOVLA`."""
 
     def __init__(
         self,
         *,
         out_dir: "str | Path" = DEFAULT_OUT_DIR,
         liquids=None,
-        instructed_liquid: str = "ethanol1.0",
+        instructed_liquid: str = "ethanol",
         place_target: str = "plate",
         instruction: str = "",
         robots: str = "Panda",
@@ -105,13 +119,17 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         render_camera: str = "agentview",
         seed: "int | None" = None,
         odor_mode: str = "discrete",
-        sample_hold_s: float = DEFAULT_SAMPLE_HOLD_S,
-        filter_hold_s: float = DEFAULT_FILTER_HOLD_S,
+        sample_hold_s: "float | None" = None,
+        filter_hold_s: "float | None" = None,
+        sniff_duration_s: "float | None" = None,
         sniff_z: float = DEFAULT_SNIFF_Z,
         filter_offset_y: float = DEFAULT_FILTER_OFFSET_Y,
         # P(sniff the instructed cup first) when it is on the table.
         # Remainder: sniff a distractor first, FILTER, then the target.
         target_first_frac: float = DEFAULT_TARGET_FIRST_FRAC,
+        odor_config: "OdorConfig | None" = None,
+        mox_models=None,
+        env_name: str = OVLA_ENV_NAME,
         # Motion / grasp knobs (same defaults as ScriptedPlaceCollector).
         pos_gain: float = 8.0,
         max_pos_action: float = 1.0,
@@ -156,6 +174,30 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         if not instructed:
             raise ValueError("instructed_liquid must be non-empty")
 
+        if odor_config is None:
+            odor_config = odor_config_from_args(
+                sniff_duration_s=sniff_duration_s,
+                filter_duration_s=filter_hold_s,
+                odor_sampling_rate=float(control_freq),
+                mox_models=mox_models,
+                voc_pool=liquids,
+                sample_hold_s=sample_hold_s,
+            )
+        else:
+            updates = {}
+            if sniff_duration_s is not None:
+                updates["sniff_duration_s"] = float(sniff_duration_s)
+            elif sample_hold_s is not None:
+                updates["sniff_duration_s"] = float(sample_hold_s)
+            if filter_hold_s is not None:
+                updates["filter_duration_s"] = float(filter_hold_s)
+            if mox_models is not None:
+                updates["mox_models"] = tuple(str(m) for m in mox_models)
+            if updates:
+                odor_config = odor_config.with_updates(**updates)
+        self.odor_config = odor_config
+        self.env_name = str(env_name)
+
         self.out_dir = Path(out_dir)
         self.verbose = bool(verbose)
         self.liquids = liquids
@@ -164,7 +206,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         self.place_target = place_target
         self.instruction_override = instruction
         self.robots = robots
-        self.control_freq = int(control_freq)
+        self.control_freq = int(self.odor_config.control_freq)
         self.record_frames = bool(record_frames)
         self.mining_cameras = list(mining_cameras)
         self.camera_size = int(camera_size)
@@ -174,8 +216,8 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         if self.odor_mode not in ("discrete", "continuous", "none"):
             raise ValueError(f"odor_mode must be discrete|continuous|none, got {odor_mode!r}")
 
-        self.sample_hold_s = float(sample_hold_s)
-        self.filter_hold_s = float(filter_hold_s)
+        self.sample_hold_s = float(self.odor_config.sniff_duration_s)
+        self.filter_hold_s = float(self.odor_config.filter_s)
         self.sniff_z = float(sniff_z)
         self.filter_offset_y = float(filter_offset_y)
         self.target_first_frac = float(np.clip(target_first_frac, 0.0, 1.0))
@@ -254,7 +296,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             "instruction": instruction,
             "robots": robots,
             "controller_configs": controller_config,
-            "control_freq": control_freq,
+            "control_freq": self.control_freq,
             "has_renderer": self.has_renderer,
             "has_offscreen_renderer": True,
             "render_camera": render_camera,
@@ -277,22 +319,26 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         if self._server_log_dir is not None:
             make_extra["server_log_dir"] = str(self._server_log_dir)
         self.cosim = odorsim.make(
-            "ClassifyLiquidPlace",
+            self.env_name,
             auto_start_gaden=want_odor,
             bridge=want_odor,
             export=want_odor,
             odor_mode=self.odor_mode,
             kill_stale_gaden=self.kill_stale_gaden,
+            mox_model=list(self.odor_config.mox_models),
             **make_extra,
             **make_kwargs,
         )
         self.env = self.cosim.env
         self.gas_types = list(getattr(self.env, "gas_types", []) or [])
         self.scenario = "10x6_uniform"
-        self.scene_id = getattr(self.cosim, "scene_id", "ClassifyLiquidPlace")
+        self.scene_id = getattr(self.cosim, "scene_id", self.env_name)
         self.home_pos: "np.ndarray | None" = None
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         self._sniff_object_id: "str | None" = None
+        self._odor_events: list[dict] = []
+        self._episode_id: "str | None" = None
 
     # ------------------------------------------------------------------ #
     # Action packing / recording
@@ -309,7 +355,13 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             target_index = liquids.index(self.instructed_liquid)
         else:
             target_index = -1  # instructed VOC absent from the scene
-        mox_models = list(getattr(self.cosim, "mox_models", None) or [])
+        mox_models = list(self.odor_config.mox_models)
+        spawn_layout = {}
+        if hasattr(self.env, "spawn_layout"):
+            try:
+                spawn_layout = self.env.spawn_layout()
+            except Exception:  # noqa: BLE001
+                spawn_layout = {}
         meta = {
             "objects": liquids,
             "liquids": list(self.liquids),
@@ -318,6 +370,8 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             "target_object": self.instructed_liquid if self.target_present else None,
             "target_catalog": self.instructed_liquid,
             "place_target": getattr(self.env, "place_target_name", self.place_target),
+            "cup_catalog": getattr(self.env, "cup_catalog_name", "porcelain_mug"),
+            "spawn_layout": spawn_layout,
             "robots": self.robots,
             "control_freq": self.control_freq,
             "action_layout": (
@@ -328,11 +382,13 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             "controller_type": self.controller_type,
             "scenario": self.scenario,
             "scene_id": self.scene_id,
+            "episode_id": self._episode_id or str(uuid.uuid4()),
+            "seed": None if self.seed is None else int(self.seed),
             "odor_mode": self.odor_mode,
             "collector": "scripted_odor_place",
-            "sample_hold_s": self.sample_hold_s,
-            "filter_hold_s": self.filter_hold_s,
-            "mox_models": mox_models,
+            "env_name": self.env_name,
+            "schema_version": "ovla-odor-0.1",
+            **self.odor_config.to_meta(),
             "mox_model": mox_models[0] if mox_models else None,
         }
         return EpisodeRecorder(
@@ -381,6 +437,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             frames=self._extract_frames(obs) if self.camera_map else None,
             enose_voltage=info.get("enose_voltage"),
             enose_voltages=info.get("enose_voltages"),
+            phase=int(self._active_phase),
         )
 
     def _step(self, recorder: EpisodeRecorder, obs, action: np.ndarray):
@@ -403,6 +460,12 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
     ):
         """Hold arm (optionally servo to target_pos) under a fixed enose state."""
         self._active_enose = int(enose_state)
+        if int(enose_state) == SAMPLE:
+            self._active_phase = PHASE_SNIFF_HOLD
+        elif int(enose_state) == FILTER:
+            self._active_phase = PHASE_FILTER_HOLD
+        else:
+            self._active_phase = PHASE_CONTROL
         for _ in range(max(0, n_steps)):
             if target_pos is not None:
                 action = self._pose_delta_action(
@@ -426,11 +489,28 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         return out
 
     def _filter_aside_pos(self, obs) -> np.ndarray:
-        """Lateral retreat from current EE for purge (FILTER) while elevated."""
+        """Elevated hover over the plate so FILTER stays inside agentview.
+
+        Discrete mode already feeds clean air during FILTER, so the move only
+        has to leave the cup. The old +Y lateral offset walked the arm off the
+        tight OVLA camera frustum.
+        """
         cur = self._eef_pos(obs)
         aside = cur.copy()
-        aside[1] = float(cur[1]) + self.filter_offset_y
-        aside[2] = max(float(cur[2]), float(self.home_pos[2]) if self.home_pos is not None else float(cur[2]))
+        plate_id = getattr(self.env, "place_target_name", None) or self.place_target
+        try:
+            plate = np.asarray(self._object_pos(plate_id), dtype=float).ravel()[:3]
+            aside[0] = float(plate[0])
+            aside[1] = float(plate[1]) + float(self.filter_offset_y)
+        except Exception:  # noqa: BLE001
+            aside[0] = float(getattr(self.env, "table_offset", np.zeros(3))[0])
+            aside[1] = float(getattr(self.env, "table_offset", np.zeros(3))[1]) + float(
+                self.filter_offset_y
+            )
+        home_z = (
+            float(self.home_pos[2]) if self.home_pos is not None else float(cur[2])
+        )
+        aside[2] = max(float(cur[2]), home_z)
         return aside
 
     def _sniff_cup(self, recorder, obs, cup_id: str):
@@ -438,6 +518,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         self._sniff_object_id = cup_id
         hover = self._sniff_hover_pos(cup_id)
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         self._log(f"approach sniff {cup_id!r} → {self._fmt_xyz(hover)}")
         obs, ok = self._go_to(
             recorder,
@@ -450,20 +531,42 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         if not ok:
             return obs, False, False
 
-        sample_steps = max(1, int(round(self.sample_hold_s * self.control_freq)))
+        sample_steps = self.odor_config.sniff_steps
+        start_step = len(recorder)
         self._log(f"SAMPLE {self.sample_hold_s:.1f}s ({sample_steps} steps) over {cup_id!r}")
         obs = self._hold_enose(
             recorder, obs, GRIPPER_OPEN, sample_steps, SAMPLE, target_pos=hover
         )
+        end_step = len(recorder) - 1
         is_match = cup_id == self.instructed_liquid
         self._log(f"sniff decision GT: match={is_match} (instructed={self.instructed_liquid!r})")
+        enose_pos = self.env.get_enose_site_pose()[0]
+        cup_pos = self.env.get_object_world_poses()[cup_id][0]
+        self._odor_events.append(
+            {
+                "event_id": len(self._odor_events),
+                "object_id": cup_id,
+                "voc_class": cup_id,
+                "start_step": start_step,
+                "end_step": end_step,
+                "decision": "grasp" if is_match else "reject",
+                "robot_sniff_pose": np.asarray(hover, dtype=float).ravel()[:3],
+                "sensor_object_distance": float(
+                    np.linalg.norm(
+                        np.asarray(enose_pos, dtype=float) - np.asarray(cup_pos, dtype=float)
+                    )
+                ),
+            }
+        )
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         return obs, True, is_match
 
     def _filter_between(self, recorder, obs):
         """Move aside and FILTER-hold so the MOX can decay before the next sniff."""
         aside = self._filter_aside_pos(obs)
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         self._log(f"filter aside → {self._fmt_xyz(aside)}")
         obs, ok = self._go_to(
             recorder,
@@ -473,18 +576,20 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             track_fingers=False,
             phase="filter_aside",
         )
-        filter_steps = max(1, int(round(self.filter_hold_s * self.control_freq)))
+        filter_steps = self.odor_config.filter_steps
         self._log(f"FILTER {self.filter_hold_s:.1f}s ({filter_steps} steps)")
         obs = self._hold_enose(
             recorder, obs, GRIPPER_OPEN, filter_steps, FILTER, target_pos=aside
         )
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         return obs, ok
 
     def _go_home(self, recorder, obs):
         if self.home_pos is None:
             return obs, True
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         self._log(f"return home → {self._fmt_xyz(self.home_pos)}")
         obs, ok = self._go_to(
             recorder,
@@ -537,6 +642,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         cup_z0 = float(self._object_pos(cup_id)[2])
         min_lift = 0.05
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
 
         def fail(reason: str):
             self._log(f"pick_place {reason}")
@@ -729,15 +835,21 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             instruction = build_instruction(self.instructed_liquid, self.place_target)
             self.env.instruction = instruction
 
+        self._episode_id = str(uuid.uuid4())
         recorder = self._new_recorder(instruction)
         self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
         self._sniff_object_id = None
+        self._odor_events = []
 
         zero = np.zeros(self._action_dim(), dtype=float)
         gdof = self._gripper_dof()
         if gdof > 0:
             zero[-gdof:] = GRIPPER_OPEN
-        self._record_step(recorder, obs, self._pack(zero, IDLE), {"ppm": {}, "sim_time": 0.0})
+        info0 = {"ppm": {}, "sim_time": 0.0}
+        if self.cosim.has_enose:
+            info0.update(self.cosim.snapshot_enose(IDLE))
+        self._record_step(recorder, obs, self._pack(zero, IDLE), info0)
 
         def fail(reason: str = "failed"):
             self._log(f"episode {reason}")
@@ -782,7 +894,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             if self.target_present and not self.env._check_success():
                 return fail("success check false after place")
             self._log("episode SUCCESS (placed)")
-            return recorder.write(success=True)
+            return self._finish_episode(recorder, success=True)
 
         # Instructed liquid absent (or never matched): return home.
         obs, ok = self._go_home(recorder, obs)
@@ -792,7 +904,26 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             # Should have found it — treat as failure so we don't poison demos.
             return fail("target present but never matched")
         self._log("episode SUCCESS (absent → home)")
-        return recorder.write(success=True)
+        return self._finish_episode(recorder, success=True)
+
+    def _finish_episode(self, recorder: EpisodeRecorder, *, success: bool) -> "Path | None":
+        path = recorder.write(success=success)
+        if path is None:
+            return None
+        if self._odor_events:
+            try:
+                write_odor_events(
+                    path,
+                    self._odor_events,
+                    mox_models=list(self.odor_config.mox_models),
+                    gas_types=list(self.gas_types),
+                    sniff_steps=self.odor_config.sniff_steps,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"odor_events write failed: {exc}")
+                self._discard_recorder(recorder)
+                return None
+        return path
 
     def collect(self, num_demos: int, *, max_attempts: "int | None" = None) -> list[Path]:
         if num_demos <= 0:
@@ -825,7 +956,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Scripted smell→decide→pick-place collector (ClassifyLiquidPlace)"
+        description="Scripted smell→decide→pick-place collector (ClassifyLiquidPlaceOVLA)"
     )
     p.add_argument(
         "--liquids",
@@ -835,7 +966,7 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--instructed",
-        default="ethanol1.0",
+        default="ethanol",
         help="Liquid named in the language instruction (may be absent from --liquids)",
     )
     p.add_argument("--place-target", default="plate")
@@ -845,16 +976,44 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     p.add_argument("--robots", default="Panda")
-    p.add_argument("--control-freq", type=int, default=20)
+    p.add_argument("--control-freq", type=int, default=int(DEFAULT_ODOR_CONFIG.control_freq))
     p.add_argument("--camera-size", type=int, default=256)
     p.add_argument("--no-frames", action="store_true")
     p.add_argument("--render", action="store_true")
     p.add_argument("--max-episode-steps", type=int, default=4000)
     p.add_argument("--odor-mode", default="discrete", choices=("discrete", "continuous", "none"))
-    p.add_argument("--sample-hold-s", type=float, default=DEFAULT_SAMPLE_HOLD_S)
-    p.add_argument("--filter-hold-s", type=float, default=DEFAULT_FILTER_HOLD_S)
+    p.add_argument(
+        "--sniff-duration",
+        type=float,
+        default=None,
+        help=(
+            f"Seconds the arm hovers above a cup while SAMPLE-ing "
+            f"(default {DEFAULT_SAMPLE_HOLD_S})"
+        ),
+    )
+    p.add_argument(
+        "--sample-hold-s",
+        type=float,
+        default=None,
+        help="Legacy alias for --sniff-duration",
+    )
+    p.add_argument(
+        "--filter-hold-s",
+        type=float,
+        default=None,
+        help=(
+            "FILTER nose-rest seconds after a wrong cup "
+            f"(default {FILTER_DURATION_FACTOR}× sniff = {DEFAULT_FILTER_HOLD_S} at "
+            f"{DEFAULT_SAMPLE_HOLD_S}s sniff)"
+        ),
+    )
     p.add_argument("--sniff-z", type=float, default=DEFAULT_SNIFF_Z)
-    p.add_argument("--filter-offset-y", type=float, default=DEFAULT_FILTER_OFFSET_Y)
+    p.add_argument(
+        "--filter-offset-y",
+        type=float,
+        default=DEFAULT_FILTER_OFFSET_Y,
+        help="Optional Y nudge from the plate hover used during FILTER (default 0; stays in frame)",
+    )
     p.add_argument(
         "--target-first-frac",
         type=float,
@@ -885,8 +1044,9 @@ def main(argv=None) -> int:
         has_renderer=args.render,
         seed=int(args.seed),
         odor_mode=args.odor_mode,
-        sample_hold_s=float(args.sample_hold_s),
-        filter_hold_s=float(args.filter_hold_s),
+        sniff_duration_s=args.sniff_duration,
+        sample_hold_s=args.sample_hold_s,
+        filter_hold_s=args.filter_hold_s,
         sniff_z=float(args.sniff_z),
         filter_offset_y=float(args.filter_offset_y),
         target_first_frac=float(args.target_first_frac),

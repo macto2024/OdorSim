@@ -261,6 +261,13 @@ def make(
             # Phase 4.5a dry run: env + exported scene only, no ROS.
             return OdorCosimSession(inner_env, **session_kwargs)
 
+        from odor_sim.runtime.gaden_gas_support import (
+            active_gaden_gas_names,
+            require_gaden_excel_gases,
+        )
+
+        require_gaden_excel_gases(active_gaden_gas_names(inner_env))
+
         # Both the server subprocess and the in-process rclpy bridge open a ROS
         # log file at init; make sure that directory is writable first.
         _ensure_writable_ros_log_dir()

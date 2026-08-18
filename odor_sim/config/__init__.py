@@ -9,6 +9,8 @@ them directly from ``odor_sim.config.recipes`` instead.
 
 from odor_sim.config.frame_map import FrameMap
 from odor_sim.config.gas_types import (
+    EXCEL_VOC_GASES,
+    EXCEL_VOC_GAS_NAMES,
     GADEN_GAS_NAMES,
     MOX_SUPPORTED,
     PID_SUPPORTED,
@@ -20,6 +22,8 @@ from odor_sim.config.gas_types import (
 __all__ = [
     "FrameMap",
     "GasType",
+    "EXCEL_VOC_GASES",
+    "EXCEL_VOC_GAS_NAMES",
     "GADEN_GAS_NAMES",
     "MOX_SUPPORTED",
     "PID_SUPPORTED",

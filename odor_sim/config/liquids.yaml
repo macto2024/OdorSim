@@ -41,15 +41,30 @@ liquids:
     recipe: liquid_grape_juice
   wine:
     recipe: liquid_wine
+  # OVLA / ScentFormer VOCs (one strength). Unsuffixed names are canonical;
+  # *1.0 aliases below keep older CLI commands working.
+  ethanol:
+    recipe: liquid_ethanol1.0
   methanol:
-    recipe: methanol_strong
+    recipe: liquid_methanol1.0
+  acetone:
+    recipe: liquid_acetone1.0
   acetic_acid:
-    recipe: acetic_acid_strong
+    recipe: liquid_acetic_acid1.0
   ethyl_acetate:
-    recipe: ethyl_acetate_strong
+    recipe: liquid_ethyl_acetate1.0
   toluene:
-    recipe: toluene_strong
-  # Pure single-VOC classes (all 7 MOX gases × 0.3 / 0.7 / 1.0)
+    recipe: liquid_toluene1.0
+  methanol1.0:
+    recipe: liquid_methanol1.0
+  acetic_acid1.0:
+    recipe: liquid_acetic_acid1.0
+  ethyl_acetate1.0:
+    recipe: liquid_ethyl_acetate1.0
+  toluene1.0:
+    recipe: liquid_toluene1.0
+  # Pure single-VOC classes (legacy 7-gas panel × 0.3 / 0.7 / 1.0).
+  # ethanol1.0 / acetone1.0 share the unsuffixed Excel recipes above.
   ethanol0.3:
     recipe: liquid_ethanol0.3
   ethanol0.7:

@@ -210,5 +210,9 @@ def _gas_color(gas_type) -> list:
         4: [0.9, 0.9, 0.2],   # chlorine
         5: [0.2, 0.9, 0.9],   # fluorine
         6: [0.9, 0.4, 0.1],   # acetone
+        14: [0.2, 0.5, 0.9],  # methanol
+        15: [0.9, 0.7, 0.2],  # acetic_acid
+        16: [0.6, 0.3, 0.5],  # ethyl_acetate
+        17: [0.4, 0.4, 0.4],  # toluene
     }
     return palette.get(int(gas_type), [0.7, 0.7, 0.7])

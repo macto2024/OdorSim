@@ -250,6 +250,16 @@ class OdorCosimSession:
         for enose in self._enoses.values():
             enose.reset()
 
+    def snapshot_enose(self, enose_state: int = IDLE, ppm: "dict | None" = None) -> dict:
+        """Return current MOX voltages without advancing physics or GADEN.
+
+        Used to tag the post-reset start frame so ``episode.npz`` always has
+        ``enose_voltage*`` keys (baseline air if ``ppm`` is empty).
+        """
+        info: dict = {"ppm": dict(ppm or {}), "sim_time": 0.0}
+        self._update_enose(info, int(enose_state))
+        return info
+
     def _split_action(self, action) -> tuple[np.ndarray, int]:
         """Split robosuite action vs optional trailing ``enose_state`` (discrete)."""
         action = np.asarray(action, dtype=float).ravel()

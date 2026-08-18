@@ -26,6 +26,20 @@ def list_recipes(path: "str | Path | None" = None) -> list[str]:
     return sorted(_load_raw(p).keys())
 
 
+def excel_panel_spec(active: str, strength: float = 1.0) -> list[dict]:
+    """Return the OVLA 6-gas panel with ``active`` emitting at ``strength``."""
+    from odor_sim.config.gas_types import EXCEL_VOC_GAS_NAMES, parse_gas_type
+
+    active_name = parse_gas_type(active).name
+    return [
+        {
+            "gas_type": name,
+            "strength": float(strength) if name == active_name else 0.0,
+        }
+        for name in EXCEL_VOC_GAS_NAMES
+    ]
+
+
 def get_recipe(name: str, path: "str | Path | None" = None):
     """Look up a recipe by name and return an :class:`OdorProfile`."""
     # Local import avoids a config <-> envs import cycle.

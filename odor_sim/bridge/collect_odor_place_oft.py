@@ -1,14 +1,16 @@
-"""Batch collection for the odor-conditioned ClassifyLiquidPlace task.
+"""Batch collection for the odor-conditioned ClassifyLiquidPlaceOVLA task.
 
-Each episode draws cups uniformly from a VOC pool (default 6 pure VOCs at
-strength 1.0). Default scene: 2 cups on the table. Scripted policy sniffs each
-cup (SAMPLE 10 s), filters between cups (FILTER 15 s aside), then either
-pick-places the instructed liquid or returns home if it is absent.
+Each episode draws cups uniformly from a VOC pool (default: the six
+ScentFormerAB gases). Default scene: two identical porcelain
+cups + a plate in tight spawn slots. Scripted policy sniffs a random first
+cup (SAMPLE ``sniff_duration_s``, default 10 s), filters between cups
+(FILTER ``1.5 × sniff``), then either pick-places the instructed liquid or
+returns home if it is absent.
 
 Parallelism (each worker gets its own ROS_DOMAIN_ID + GADEN server)::
 
     python -m odor_sim.bridge.collect_odor_place_oft \\
-        --out-dir /root/Odorbot/datasets/odor_place_oft \\
+        --out-dir /root/Odorbot/datasets/odor_ovla_oft \\
         --num-demos 50 --num-workers 4 --quiet
 """
 
@@ -38,21 +40,18 @@ from odor_sim.bridge.scripted_place import (
     add_motion_shaping_args,
     motion_shaping_kwargs,
 )
+from odor_sim.recording.odor_config import (
+    DEFAULT_ODOR_CONFIG,
+    DEFAULT_VOC_POOL,
+    FILTER_DURATION_FACTOR,
+    odor_config_from_args,
+)
 
-DEFAULT_OUT_DIR = "/root/Odorbot/datasets/odor_place_oft"
+DEFAULT_OUT_DIR = "/root/Odorbot/datasets/odor_ovla_oft"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_ROS_DOMAIN_BASE = 50
 DEFAULT_NUM_WORKERS = 1
 
-# Six pure VOC classes (strength 1.0) — uniform draw per scene.
-DEFAULT_VOC_POOL = (
-    "ethanol1.0",
-    "propanol1.0",
-    "acetone1.0",
-    "methane1.0",
-    "hydrogen1.0",
-    "chlorine1.0",
-)
 DEFAULT_NUM_CUPS = 2
 
 MANIFEST_FIELDS = [
@@ -66,6 +65,12 @@ MANIFEST_FIELDS = [
     "seed",
     "success",
     "worker_id",
+    "scene_id",
+    "sniff_duration_s",
+    "filter_duration_s",
+    "odor_sampling_rate",
+    "mox_models",
+    "voc_pool",
 ]
 
 
@@ -85,8 +90,18 @@ def _manifest_row(
     ep_dir: Path, *, liquids, instructed, seed: int, worker_id: int = 0
 ) -> dict:
     meta = _read_meta(ep_dir)
+    mox = meta.get("mox_models") or []
+    if isinstance(mox, list):
+        mox_s = ",".join(str(x) for x in mox)
+    else:
+        mox_s = str(mox)
+    voc = meta.get("voc_pool") or liquids
+    if isinstance(voc, list):
+        voc_s = ";".join(str(x) for x in voc)
+    else:
+        voc_s = str(voc)
     return {
-        "episode_id": ep_dir.name,
+        "episode_id": meta.get("episode_id") or ep_dir.name,
         "episode_path": str(ep_dir.resolve()),
         "liquids": ";".join(liquids),
         "instructed_liquid": instructed,
@@ -96,6 +111,12 @@ def _manifest_row(
         "seed": int(seed),
         "success": True,
         "worker_id": int(worker_id),
+        "scene_id": meta.get("scene_id", ""),
+        "sniff_duration_s": meta.get("sniff_duration_s", ""),
+        "filter_duration_s": meta.get("filter_duration_s", ""),
+        "odor_sampling_rate": meta.get("odor_sampling_rate", ""),
+        "mox_models": mox_s,
+        "voc_pool": voc_s,
     }
 
 
@@ -229,6 +250,16 @@ def _collect_one(payload: dict) -> "dict | None":
     for attempt in range(max_attempts):
         t0 = time.time()
         try:
+            cfg = odor_config_from_args(
+                sniff_duration_s=float(payload["sample_hold_s"]),
+                filter_duration_s=(
+                    None
+                    if payload.get("filter_hold_s") is None
+                    else float(payload["filter_hold_s"])
+                ),
+                mox_models=payload.get("mox_models"),
+                voc_pool=payload.get("voc_pool") or liquids,
+            )
             with ScriptedOdorPlaceCollector(
                 out_dir=raw_dir,
                 liquids=liquids,
@@ -237,8 +268,7 @@ def _collect_one(payload: dict) -> "dict | None":
                 record_frames=True,
                 has_renderer=False,
                 odor_mode=str(payload["odor_mode"]),
-                sample_hold_s=float(payload["sample_hold_s"]),
-                filter_hold_s=float(payload["filter_hold_s"]),
+                odor_config=cfg,
                 target_first_frac=float(
                     payload.get("target_first_frac", DEFAULT_TARGET_FIRST_FRAC)
                 ),
@@ -303,12 +333,13 @@ def collect_batch(
     max_attempts_per_ep: int,
     quiet: bool,
     sample_hold_s: float,
-    filter_hold_s: float,
+    filter_hold_s: "float | None",
     target_first_frac: float,
     odor_mode: str,
     motion: dict,
     num_workers: int = 1,
     ros_domain_base: int = _DEFAULT_ROS_DOMAIN_BASE,
+    mox_models: "list[str] | None" = None,
 ) -> list[dict]:
     """Collect ``num_demos`` episodes with uniform VOC draws from ``voc_pool``."""
     out_dir = Path(out_dir)
@@ -357,6 +388,8 @@ def collect_batch(
                 "target_first_frac": target_first_frac,
                 "odor_mode": odor_mode,
                 "motion": motion,
+                "mox_models": list(mox_models) if mox_models is not None else None,
+                "voc_pool": list(voc_pool),
                 "worker_id": worker_id,
                 "ros_domain_id": int(ros_domain_base) + worker_id,
                 "kill_stale_gaden": num_workers == 1,
@@ -481,8 +514,39 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     p.add_argument("--base-seed", type=int, default=0)
     p.add_argument("--max-attempts-per-ep", type=int, default=15)
-    p.add_argument("--sample-hold-s", type=float, default=DEFAULT_SAMPLE_HOLD_S)
-    p.add_argument("--filter-hold-s", type=float, default=DEFAULT_FILTER_HOLD_S)
+    p.add_argument(
+        "--sniff-duration",
+        type=float,
+        default=None,
+        help=(
+            f"Seconds hovering above a cup while SAMPLE-ing "
+            f"(default {DEFAULT_SAMPLE_HOLD_S})"
+        ),
+    )
+    p.add_argument(
+        "--sample-hold-s",
+        type=float,
+        default=None,
+        help="Legacy alias for --sniff-duration",
+    )
+    p.add_argument(
+        "--filter-hold-s",
+        type=float,
+        default=None,
+        help=(
+            "FILTER nose-rest seconds after a wrong cup "
+            f"(default {FILTER_DURATION_FACTOR}× sniff)"
+        ),
+    )
+    p.add_argument(
+        "--mox-models",
+        nargs="+",
+        default=None,
+        help=(
+            "MOX sensor ids in encoder order "
+            f"(default: {' '.join(DEFAULT_ODOR_CONFIG.mox_models)})"
+        ),
+    )
     p.add_argument(
         "--target-first-frac",
         type=float,
@@ -528,6 +592,13 @@ def main(argv=None) -> int:
     if int(args.num_workers) > 1:
         os.environ.setdefault("MUJOCO_GL", "egl")
     voc_pool = list(args.liquids) if args.liquids is not None else list(args.voc_pool)
+    cfg = odor_config_from_args(
+        sniff_duration_s=args.sniff_duration,
+        sample_hold_s=args.sample_hold_s,
+        filter_duration_s=args.filter_hold_s,
+        mox_models=args.mox_models,
+        voc_pool=voc_pool,
+    )
     rows = collect_batch(
         out_dir=Path(args.out_dir),
         num_demos=int(args.num_demos),
@@ -538,13 +609,14 @@ def main(argv=None) -> int:
         base_seed=int(args.base_seed),
         max_attempts_per_ep=int(args.max_attempts_per_ep),
         quiet=bool(args.quiet),
-        sample_hold_s=float(args.sample_hold_s),
-        filter_hold_s=float(args.filter_hold_s),
+        sample_hold_s=float(cfg.sniff_duration_s),
+        filter_hold_s=float(cfg.filter_s),
         target_first_frac=float(args.target_first_frac),
         odor_mode=str(args.odor_mode),
         motion=motion_shaping_kwargs(args),
         num_workers=int(args.num_workers),
         ros_domain_base=int(args.ros_domain_base),
+        mox_models=list(cfg.mox_models),
     )
     return 0 if len(rows) >= int(args.num_demos) else 1
 

@@ -7,8 +7,6 @@ Two headless collectors share the teleop episode layout (`episode.npz`, `meta.js
 | Vision pick-place | `OdorPlace` | RGB only (no GADEN odor) | `collect_place_oft` |
 | Odor pick-place | `ClassifyLiquidPlace` | Sniff → decide → place | `collect_odor_place_oft` |
 
-`collect_odorplace_oft` is a **backward-compatible alias** of `collect_place_oft` (vision). Prefer the names above so `collect_odor*` means the odor-conditioned robot task.
-
 Odor-conditioned demos: [scripted-odor-place-collection.md](scripted-odor-place-collection.md).
 
 ---

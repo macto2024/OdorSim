@@ -60,6 +60,19 @@ GADEN_GAS_NAMES: dict[GasType, str] = {
     GasType.toluene: "toluene",
 }
 
+# Excel-calibrated / ScentFormer VOC panel. OVLA liquids (``ethanol``, …)
+# declare this full layout (active gas at strength 1, the rest at 0) so
+# recorded ppm columns stay stable. Integer IDs 14–17 require patched GADEN.
+EXCEL_VOC_GASES: tuple[GasType, ...] = (
+    GasType.ethanol,
+    GasType.methanol,
+    GasType.acetone,
+    GasType.acetic_acid,
+    GasType.ethyl_acetate,
+    GasType.toluene,
+)
+EXCEL_VOC_GAS_NAMES: tuple[str, ...] = tuple(g.name for g in EXCEL_VOC_GASES)
+
 # Gas types that OdorSim's calibrated Python MOX array may consume. The legacy
 # GADEN fake_gas_sensor.cpp remains unchanged; it is not used for these curves.
 MOX_SUPPORTED: frozenset[GasType] = frozenset(

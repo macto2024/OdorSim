@@ -39,7 +39,7 @@ python -m odor_sim.bridge.teleop \
   --device keyboard --odor-monitor
 ```
 
-Pure single-VOC classes work too (`ethanol0.3`, `acetone1.0`, ...). The added Excel gases are selectable as `methanol`, `acetic_acid`, `ethyl_acetate`, and `toluene`. Liquid names: `odor_sim/config/liquids.yaml`. Cups: `porcelain_mug`, `white_yellow_mug`, `red_coffee_mug`.
+Pure single-VOC classes work too (`ethanol`, `acetone`, `ethanol0.3`, …). The Excel gases are `ethanol`, `methanol`, `acetone`, `acetic_acid`, `ethyl_acetate`, and `toluene`. Liquid names: `odor_sim/config/liquids.yaml`. Cups: `porcelain_mug`, `white_yellow_mug`, `red_coffee_mug`.
 
 ## ClassifyLiquidPlace
 

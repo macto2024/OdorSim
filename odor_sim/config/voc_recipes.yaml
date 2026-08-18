@@ -106,15 +106,14 @@ recipes:
     - {gas_type: fluorine, strength: 0.0}
     - {gas_type: acetone,  strength: 0.2}
 
-  # Inert place-target fixture (no smell class; all strength 0).
+  # Inert place-target fixture (no smell class; Excel panel at strength 0).
   obj_plate:
-    - {gas_type: ethanol,  strength: 0.0}
-    - {gas_type: methane,  strength: 0.0}
-    - {gas_type: hydrogen, strength: 0.0}
-    - {gas_type: propanol, strength: 0.0}
-    - {gas_type: chlorine, strength: 0.0}
-    - {gas_type: fluorine, strength: 0.0}
-    - {gas_type: acetone,  strength: 0.0}
+    - {gas_type: ethanol,       strength: 0.0}
+    - {gas_type: methanol,      strength: 0.0}
+    - {gas_type: acetone,       strength: 0.0}
+    - {gas_type: acetic_acid,   strength: 0.0}
+    - {gas_type: ethyl_acetate, strength: 0.0}
+    - {gas_type: toluene,       strength: 0.0}
 
   # Inert mug meshes for vision-only OdorPlace (no smell class).
   obj_white_yellow_mug:
@@ -218,14 +217,17 @@ recipes:
     - {gas_type: fluorine, strength: 0.0}
     - {gas_type: acetone,  strength: 0.0}
 
+  # OVLA / ScentFormer Excel 6-gas panel. Only the named gas emits; the rest
+  # stay at strength 0 so the ppm vector is always
+  # ethanol, methanol, acetone, acetic_acid, ethyl_acetate, toluene.
+  # Strength-0 gases are not exported to GADEN (no extra sources).
   liquid_ethanol1.0:
-    - {gas_type: ethanol,  strength: 1.0}
-    - {gas_type: methane,  strength: 0.0}
-    - {gas_type: hydrogen, strength: 0.0}
-    - {gas_type: propanol, strength: 0.0}
-    - {gas_type: chlorine, strength: 0.0}
-    - {gas_type: fluorine, strength: 0.0}
-    - {gas_type: acetone,  strength: 0.0}
+    - {gas_type: ethanol,       strength: 1.0}
+    - {gas_type: methanol,      strength: 0.0}
+    - {gas_type: acetone,       strength: 0.0}
+    - {gas_type: acetic_acid,   strength: 0.0}
+    - {gas_type: ethyl_acetate, strength: 0.0}
+    - {gas_type: toluene,       strength: 0.0}
 
   liquid_methane0.3:
     - {gas_type: ethanol,  strength: 0.0}
@@ -381,10 +383,41 @@ recipes:
     - {gas_type: acetone,  strength: 0.7}
 
   liquid_acetone1.0:
-    - {gas_type: ethanol,  strength: 0.0}
-    - {gas_type: methane,  strength: 0.0}
-    - {gas_type: hydrogen, strength: 0.0}
-    - {gas_type: propanol, strength: 0.0}
-    - {gas_type: chlorine, strength: 0.0}
-    - {gas_type: fluorine, strength: 0.0}
-    - {gas_type: acetone,  strength: 1.0}
+    - {gas_type: ethanol,       strength: 0.0}
+    - {gas_type: methanol,      strength: 0.0}
+    - {gas_type: acetone,       strength: 1.0}
+    - {gas_type: acetic_acid,   strength: 0.0}
+    - {gas_type: ethyl_acetate, strength: 0.0}
+    - {gas_type: toluene,       strength: 0.0}
+
+  liquid_methanol1.0:
+    - {gas_type: ethanol,       strength: 0.0}
+    - {gas_type: methanol,      strength: 1.0}
+    - {gas_type: acetone,       strength: 0.0}
+    - {gas_type: acetic_acid,   strength: 0.0}
+    - {gas_type: ethyl_acetate, strength: 0.0}
+    - {gas_type: toluene,       strength: 0.0}
+
+  liquid_acetic_acid1.0:
+    - {gas_type: ethanol,       strength: 0.0}
+    - {gas_type: methanol,      strength: 0.0}
+    - {gas_type: acetone,       strength: 0.0}
+    - {gas_type: acetic_acid,   strength: 1.0}
+    - {gas_type: ethyl_acetate, strength: 0.0}
+    - {gas_type: toluene,       strength: 0.0}
+
+  liquid_ethyl_acetate1.0:
+    - {gas_type: ethanol,       strength: 0.0}
+    - {gas_type: methanol,      strength: 0.0}
+    - {gas_type: acetone,       strength: 0.0}
+    - {gas_type: acetic_acid,   strength: 0.0}
+    - {gas_type: ethyl_acetate, strength: 1.0}
+    - {gas_type: toluene,       strength: 0.0}
+
+  liquid_toluene1.0:
+    - {gas_type: ethanol,       strength: 0.0}
+    - {gas_type: methanol,      strength: 0.0}
+    - {gas_type: acetone,       strength: 0.0}
+    - {gas_type: acetic_acid,   strength: 0.0}
+    - {gas_type: ethyl_acetate, strength: 0.0}
+    - {gas_type: toluene,       strength: 1.0}

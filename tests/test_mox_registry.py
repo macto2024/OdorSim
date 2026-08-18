@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from odor_sim.config.gas_types import (
+    EXCEL_VOC_GASES,
     GADEN_GAS_NAMES,
     MOX_SUPPORTED,
     GasType,
@@ -107,7 +108,9 @@ class MoxRegistryTests(unittest.TestCase):
 
     def test_extended_gases_are_selectable_three_cup_liquids(self):
         for gas in (
+            "ethanol",
             "methanol",
+            "acetone",
             "acetic_acid",
             "ethyl_acetate",
             "toluene",
@@ -115,7 +118,8 @@ class MoxRegistryTests(unittest.TestCase):
             recipe_name = get_liquid_spec(gas).recipe
             profile = get_recipe(recipe_name)
             self.assertEqual(profile.num_sources, 1)
-            self.assertEqual(profile.gas_types, [parse_gas_type(gas)])
+            self.assertEqual(profile.gas_types, list(EXCEL_VOC_GASES))
+            self.assertEqual(profile.active_components()[0].gas_type, parse_gas_type(gas))
 
     def test_all_excel_gases_are_active_at_runtime(self):
         sensor = MOXSensor("601")

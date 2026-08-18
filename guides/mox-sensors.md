@@ -51,7 +51,9 @@ Rejected red workbook channels do not contribute to nominal fits.
 Runtime curves are available for methanol, ethanol, acetic acid, ethyl acetate,
 toluene, and acetone. The four gases absent from upstream GADEN are added by
 `patches/gaden_core_add_excel_gases.patch`; the setup script applies this
-patch idempotently before building GADEN.
+patch idempotently before building GADEN. OVLA collection (`collect_odor_place_oft`)
+uses those IDs plus the eight-sensor default array; `make()` will refuse to
+start if `odor_gaden_rt` was built without the patch.
 
 ## Regeneration and validation
 

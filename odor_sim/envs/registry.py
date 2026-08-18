@@ -43,6 +43,12 @@ def _odor_place():
     return OdorPlace
 
 
+def _classify_liquid_place_ovla():
+    from odor_sim.envs.classify_liquid_place_ovla import ClassifyLiquidPlaceOVLA
+
+    return ClassifyLiquidPlaceOVLA
+
+
 # string -> {factory, defaults}. ``cls`` is a zero-arg callable returning the
 # env class (lazy import); ``defaults`` are merged under explicit make() kwargs.
 # Objects carry their own dedicated recipes, so there is no default_recipe.
@@ -62,6 +68,10 @@ REGISTERED_TASKS: dict[str, dict] = {
     "OdorPlace": {
         "cls": _odor_place,
         "default_instruction": None,  # env generates one from cup + place_target
+    },
+    "ClassifyLiquidPlaceOVLA": {
+        "cls": _classify_liquid_place_ovla,
+        "default_instruction": None,  # env generates one from liquid + place_target
     },
 }
 

@@ -180,6 +180,7 @@ class EpisodeRecorder:
         frames: "dict | None" = None,
         enose_voltage: "float | None" = None,
         enose_voltages: "dict | None" = None,
+        phase: "int | None" = None,
     ):
         row = {
             "sim_time": float(sim_time),
@@ -193,15 +194,24 @@ class EpisodeRecorder:
             "enose_pos": np.asarray(enose_pos, dtype=np.float32).ravel()[:3],
             "target_pos": np.asarray(target_pos, dtype=np.float32).ravel()[:3],
         }
-        if enose_voltage is not None:
-            row["enose_voltage"] = float(enose_voltage)
+        model_order = list(self.meta.get("mox_models") or [])
         if enose_voltages:
-            # Preserve model order from meta["mox_models"] when present.
-            model_order = list(self.meta.get("mox_models") or enose_voltages.keys())
+            if not model_order:
+                model_order = list(enose_voltages.keys())
             row["enose_voltages"] = np.asarray(
                 [float(enose_voltages.get(m, 0.0)) for m in model_order],
                 dtype=np.float32,
             )
+        elif model_order:
+            # Keep a voltage column even on the dummy start frame so write()
+            # does not drop the live stream from later steps.
+            row["enose_voltages"] = np.zeros(len(model_order), dtype=np.float32)
+        if enose_voltage is not None:
+            row["enose_voltage"] = float(enose_voltage)
+        elif "enose_voltages" in row:
+            row["enose_voltage"] = float(row["enose_voltages"][0])
+        if phase is not None:
+            row["phase"] = int(phase)
         if proprio:
             row["proprio"] = {
                 k: np.asarray(v, dtype=np.float32).ravel() for k, v in proprio.items()
@@ -258,22 +268,41 @@ class EpisodeRecorder:
         arrays.update(proprio)
         odor_mode = str(self.meta.get("odor_mode") or "none")
         mox_models = list(self.meta.get("mox_models") or [])
-        if self._rows and "enose_voltage" in self._rows[0]:
-            voltage = np.array([r["enose_voltage"] for r in self._rows], dtype=np.float32)
+        if any("enose_voltage" in r for r in self._rows):
+            voltage = np.array(
+                [float(r["enose_voltage"]) if "enose_voltage" in r else 0.0 for r in self._rows],
+                dtype=np.float32,
+            )
             # Mode-specific primary keys match offline synthesize / LeRobot convert.
             if odor_mode == "discrete":
                 arrays["enose_voltage_sampling"] = voltage
             else:
                 arrays["enose_voltage_continuous"] = voltage
             arrays["enose_voltage"] = voltage
-        if self._rows and "enose_voltages" in self._rows[0]:
-            multi = np.stack([r["enose_voltages"] for r in self._rows]).astype(np.float32)
+        if any("enose_voltages" in r for r in self._rows):
+            width = len(mox_models)
+            if width <= 0:
+                for r in self._rows:
+                    if "enose_voltages" in r:
+                        width = int(np.asarray(r["enose_voltages"]).size)
+                        break
+            stacked = []
+            for r in self._rows:
+                if "enose_voltages" in r:
+                    stacked.append(np.asarray(r["enose_voltages"], dtype=np.float32).ravel())
+                else:
+                    stacked.append(np.zeros(width, dtype=np.float32))
+            multi = np.stack(stacked).astype(np.float32)
             arrays["enose_voltages"] = multi  # (T, n_models)
             # Also write per-model 1-D streams for easy offline inspection.
             if mox_models and multi.ndim == 2 and multi.shape[1] == len(mox_models):
                 suffix = "sampling" if odor_mode == "discrete" else "continuous"
                 for i, name in enumerate(mox_models):
                     arrays[f"enose_voltage_{suffix}_{name}"] = multi[:, i]
+        if self._rows and "phase" in self._rows[0]:
+            arrays["phase"] = np.array(
+                [int(r.get("phase", 0)) for r in self._rows], dtype=np.int8
+            )
         np.savez(ep_dir / "episode.npz", **arrays)
 
         class_names = list(self.meta.get("objects") or [])
