@@ -43,6 +43,8 @@ from pathlib import Path
 from odor_sim.envs.registry import get_task_spec, make_env, resolve_scenario
 from odor_sim.runtime.odor_monitor import OdorMonitor, parse_odor_monitor_spec
 from odor_sim.runtime.sensor_monitor import SensorMonitor, parse_sensor_monitor_spec
+from odor_sim.runtime.classifier_monitor import ClassifierMonitor, parse_classifier_monitor_spec
+from odor_sim.runtime.odor_classifier import load_scentformer_classifier, resolve_checkpoint_path
 from odor_sim.runtime.session import OdorCosimSession, resolve_mox_models
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +83,51 @@ def _build_sensor_monitor(spec, mox_models: list[str], *, primary_mox_model: str
         primary_mox_model=primary_mox_model,
         **opts,
     )
+
+
+def _parse_odor_classifier_spec(spec) -> dict:
+    """Normalize ``odor_classifier`` make() kwarg."""
+    if not spec:
+        return {"enabled": False}
+    if spec is True:
+        return {"enabled": True, "checkpoint": None}
+    if isinstance(spec, (str, Path)):
+        return {"enabled": True, "checkpoint": str(spec)}
+    if isinstance(spec, dict):
+        return {"enabled": True, **spec}
+    raise ValueError(
+        f"odor_classifier must be False, True, a checkpoint path, or a dict; got {spec!r}"
+    )
+
+
+def _build_odor_classifier(spec, mox_models: list[str], *, odor_mode: str):
+    """Construct ScentFormer classifier + optional monitor from make() spec."""
+    opts = _parse_odor_classifier_spec(spec)
+    if not opts.pop("enabled", False):
+        return None, None
+    mode = str(odor_mode or "none").strip().lower()
+    if mode == "none":
+        raise ValueError(
+            "odor_classifier requires odor_mode='continuous' or 'discrete' "
+            "(live MOX voltages are required)"
+        )
+    monitor_spec = opts.pop("classifier_monitor", True)
+    infer_every_n = int(opts.pop("infer_every_n", 10))
+    device = opts.pop("device", None)
+    checkpoint = opts.pop("checkpoint", None)
+    if opts:
+        raise ValueError(f"unknown odor_classifier options: {sorted(opts)}")
+    resolve_checkpoint_path(checkpoint)
+    classifier = load_scentformer_classifier(
+        checkpoint,
+        mox_models=mox_models,
+        infer_every_n=infer_every_n,
+        device=device,
+    )
+    mon_opts = parse_classifier_monitor_spec(monitor_spec)
+    if not mon_opts.pop("enabled", False):
+        return classifier, None
+    return classifier, ClassifierMonitor(classifier.gas_order, **mon_opts)
 
 
 def _default_scene_id(env: str, objects=None) -> str:
@@ -151,6 +198,7 @@ def make(
     publish_markers: bool = False,
     odor_monitor=False,
     sensor_monitor=False,
+    odor_classifier=False,
     odor_mode: str = "none",
     mox_model: "str | list[str] | None" = None,
     load_resistance: "float | None" = None,
@@ -189,6 +237,11 @@ def make(
         sensor_monitor: live MOX voltage UX — same shapes as ``odor_monitor``.
             Requires ``odor_mode`` continuous/discrete (uses the active
             ``mox_model`` set). Works with or without GADEN.
+        odor_classifier: live ScentFormer odor classification — ``False`` (off),
+            ``True`` (default checkpoint), a path to ``phase_b_best_loss.pt``,
+            or a dict (``checkpoint``, ``infer_every_n``, ``classifier_monitor``, ``device``).
+            Requires ``odor_mode`` continuous/discrete and the default eight-sensor
+            MOX array (omit ``mox_model``).
         odor_mode: live voltage path — ``"none"`` (ppm only), ``"continuous"``
             (always-on MOX), or ``"discrete"`` (valve-gated by trailing
             ``enose_state`` on the action). Mutually exclusive streams.
@@ -234,6 +287,13 @@ def make(
             "(set odor_mode='continuous' or 'discrete')"
         )
 
+    odor_clf = None
+    clf_mon = None
+    if odor_classifier:
+        odor_clf, clf_mon = _build_odor_classifier(
+            odor_classifier, mox_models, odor_mode=odor_mode
+        )
+
     session_kwargs = dict(
         scene_path=None,
         scene_id=scene_id,
@@ -244,6 +304,8 @@ def make(
         vcc=vcc,
         enose_rate=enose_rate,
         sensor_monitor=sensor_mon,
+        odor_classifier=odor_clf,
+        classifier_monitor=clf_mon,
     )
 
     scene_path = None
@@ -326,6 +388,11 @@ def make(
         if sensor_mon is not None:
             try:
                 sensor_mon.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if clf_mon is not None:
+            try:
+                clf_mon.close()
             except Exception:  # noqa: BLE001
                 pass
         if server is not None and owns_server:

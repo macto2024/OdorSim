@@ -157,6 +157,8 @@ class OdorCosimSession:
             ``connect_only``), the server is left running.
         odor_monitor: optional :class:`~odor_sim.runtime.odor_monitor.OdorMonitor`.
         sensor_monitor: optional :class:`~odor_sim.runtime.sensor_monitor.SensorMonitor`.
+        odor_classifier: optional :class:`~odor_sim.runtime.odor_classifier.ScentFormerClassifier`.
+        classifier_monitor: optional :class:`~odor_sim.runtime.classifier_monitor.ClassifierMonitor`.
         odor_mode: ``none`` | ``continuous`` | ``discrete`` live voltage path.
         mox_model: MOX model id(s) to stream. ``None`` uses the fixed eight-sensor
             OVLA array; ``\"all\"`` runs every supported model. A string, comma
@@ -178,6 +180,8 @@ class OdorCosimSession:
         owns_server: bool = True,
         odor_monitor=None,
         sensor_monitor=None,
+        odor_classifier=None,
+        classifier_monitor=None,
         odor_mode: str = "none",
         mox_model: "str | Sequence[str] | None" = None,
         load_resistance: "float | None" = None,
@@ -193,6 +197,8 @@ class OdorCosimSession:
         self.owns_server = bool(owns_server)
         self.odor_monitor = odor_monitor
         self.sensor_monitor = sensor_monitor
+        self.odor_classifier = odor_classifier
+        self.classifier_monitor = classifier_monitor
         self._closed = False
         self._sensor_step = 0
 
@@ -241,6 +247,10 @@ class OdorCosimSession:
             self.odor_monitor.reset()
         if self.sensor_monitor is not None:
             self.sensor_monitor.reset()
+        if self.odor_classifier is not None:
+            self.odor_classifier.reset()
+        if self.classifier_monitor is not None:
+            self.classifier_monitor.reset()
         self._sensor_step = 0
         self.reset_enose()
         return obs
@@ -337,6 +347,18 @@ class OdorCosimSession:
             sampling_active=info.get("sampling_active"),
         )
 
+    def _update_odor_classifier(self, info: dict) -> None:
+        """Run ScentFormer on live voltages; fill ``info['odor_prediction']``."""
+        if self.odor_classifier is None or "enose_voltages" not in info:
+            return
+        prediction = self.odor_classifier.update(info["enose_voltages"])
+        if prediction is None:
+            return
+        info["odor_prediction"] = prediction.as_dict()
+        if self.classifier_monitor is not None:
+            t = float(info.get("sim_time", 0.0))
+            self.classifier_monitor.record(t, prediction)
+
     def step(self, action):
         """Advance physics one control step, then GADEN one step in lockstep.
 
@@ -367,6 +389,7 @@ class OdorCosimSession:
             info.setdefault("ppm", {})
         self._update_enose(info, enose_state)
         self._record_sensor_monitor(info)
+        self._update_odor_classifier(info)
         return obs, reward, done, info
 
     # ------------------------------------------------------------------ #
@@ -383,6 +406,11 @@ class OdorCosimSession:
         if self.sensor_monitor is not None:
             try:
                 self.sensor_monitor.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if self.classifier_monitor is not None:
+            try:
+                self.classifier_monitor.close()
             except Exception:  # noqa: BLE001
                 pass
         # order: bridge first (stops ROS traffic), then server, then env.

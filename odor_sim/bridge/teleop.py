@@ -104,6 +104,48 @@ def _validate_robot(robots: str) -> str:
     return robots
 
 
+def _validate_scentformer_liquids(liquids: list[str] | None) -> None:
+    """Ensure teleop liquids are within the six ScentFormer VOC classes."""
+    from odor_sim.config.gas_types import EXCEL_VOC_GAS_NAMES
+
+    if not liquids:
+        return
+    allowed = set(EXCEL_VOC_GAS_NAMES)
+    bad = [name for name in liquids if name not in allowed]
+    if bad:
+        raise ValueError(
+            "ScentFormer odor classifier supports only the six Excel VOC liquids "
+            f"{sorted(allowed)}; got unsupported: {bad}"
+        )
+
+
+def cup_ground_truth(env) -> dict[str, str] | None:
+    """Map left/right cup slots to liquid names after env reset (OVLA layout)."""
+    spawn_layout = getattr(env, "spawn_layout", None)
+    if spawn_layout is None:
+        return None
+    place_target = getattr(env, "_place_target_name", None)
+    layout = env.spawn_layout()
+    cups: dict[str, str] = {}
+    for obj_id, meta in layout.items():
+        if place_target and obj_id == place_target:
+            continue
+        pos = meta.get("pos", [0.0, 0.0, 0.0])
+        y = float(pos[1])
+        slot = "left" if y < 0.0 else "right"
+        cups[slot] = str(obj_id)
+    return cups or None
+
+
+def _push_classifier_ground_truth(cosim, env) -> None:
+    monitor = getattr(cosim, "classifier_monitor", None)
+    if monitor is None:
+        return
+    gt = cup_ground_truth(env)
+    if gt:
+        monitor.set_ground_truth(gt)
+
+
 class EpisodeRecorder:
     """Accumulates per-step records and writes one episode to disk.
 
@@ -373,6 +415,7 @@ class TeleopSession:
         mox_model=None,
         load_resistance: float | None = None,
         vcc: float = 5.0,
+        odor_classifier=False,
     ):
         import odor_sim as odorsim
         from robosuite.controllers import load_composite_controller_config
@@ -440,6 +483,9 @@ class TeleopSession:
         if place_target:
             object_kwargs["place_target"] = place_target
 
+        if odor_classifier:
+            _validate_scentformer_liquids(list(liquids) if liquids else None)
+
         self.cosim = odorsim.make(
             env,
             scenario=scenario,
@@ -447,6 +493,7 @@ class TeleopSession:
             bridge=use_bridge,
             odor_monitor=odor_monitor if use_bridge else False,
             sensor_monitor=sensor_monitor,
+            odor_classifier=odor_classifier,
             odor_mode=odor_mode,
             mox_model=mox_models,
             load_resistance=load_resistance,
@@ -691,6 +738,11 @@ class TeleopSession:
             self.cosim.odor_monitor.reset()
         if self.cosim.sensor_monitor is not None:
             self.cosim.sensor_monitor.reset()
+        if self.cosim.odor_classifier is not None:
+            self.cosim.odor_classifier.reset()
+        if self.cosim.classifier_monitor is not None:
+            self.cosim.classifier_monitor.reset()
+        _push_classifier_ground_truth(self.cosim, self.env)
         gripper_dof = self._gripper_dof()
 
         for a, e in zip(arm_actions, enose_schedule):
@@ -732,6 +784,11 @@ class TeleopSession:
                 self.cosim.odor_monitor.reset()
             if self.cosim.sensor_monitor is not None:
                 self.cosim.sensor_monitor.reset()
+            if self.cosim.odor_classifier is not None:
+                self.cosim.odor_classifier.reset()
+            if self.cosim.classifier_monitor is not None:
+                self.cosim.classifier_monitor.reset()
+            _push_classifier_ground_truth(self.cosim, self.env)
             self.env.render()
             device.start_control()
             self._cancel_enose_sequence()
@@ -768,7 +825,7 @@ class TeleopSession:
                     prev_gripper[g] = action_dict[g]
 
                 enose_state, enose_forced = enose_keys.consume()
-                _, _, _, _, eff, samp = self.step(
+                _, _, _, info, eff, samp = self.step(
                     recorder, env_action, enose_state, gripper_dof, enose_forced=enose_forced
                 )
                 self.env.render()
@@ -798,6 +855,7 @@ class TeleopSession:
                     hold_left=self._phase_left,
                     seq_phase=self._seq_phase,
                     control_freq=float(self.env.control_freq),
+                    odor_prediction=info.get("odor_prediction"),
                 )
 
                 task_completion_hold_count, end_on_success = self._update_success_hold(
@@ -873,6 +931,7 @@ class TeleopSession:
         hold_left=0,
         seq_phase=None,
         control_freq=20.0,
+        odor_prediction=None,
     ):
         token = {SAMPLE: "SAMPLE", IDLE: "idle", FILTER: "FILTER"}.get(enose_state, "?")
         if seq_phase and hold_left > 0 and control_freq > 0:
@@ -890,8 +949,15 @@ class TeleopSession:
         success_tag = ""
         if success_hold_count > 0:
             success_tag = f"  [SUCCESS {success_hold_count}]"
+        clf_tag = ""
+        if isinstance(odor_prediction, dict):
+            top = odor_prediction.get("top_gas", "?")
+            conf = float(odor_prediction.get("top_confidence", 0.0))
+            win = odor_prediction.get("window_s")
+            win_tag = f"@{int(win)}s" if win is not None else ""
+            clf_tag = f"  smell{win_tag}={top} {conf:.0%}"
         print(
-            f"\r[{step_i:5d}] enose={token}{tag}{success_tag}  | {instruction}   ",
+            f"\r[{step_i:5d}] enose={token}{tag}{success_tag}{clf_tag}  | {instruction}   ",
             end="",
             flush=True,
         )
@@ -1057,6 +1123,15 @@ def main(argv=None) -> int:
         help="live MOX voltage log/plot (needs --odor-mode continuous|discrete): "
         "default log+plot; MODE=log or plot for one only",
     )
+    parser.add_argument(
+        "--odor-classifier",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="CKPT",
+        help="live ScentFormer odor classification panel (needs --odor-mode "
+        "continuous|discrete; default checkpoint Smellnet_chkpt/phase_b_best_loss.pt)",
+    )
     args = parser.parse_args(argv)
 
     odor_monitor = False
@@ -1065,6 +1140,14 @@ def main(argv=None) -> int:
     sensor_monitor = False
     if args.sensor_monitor is not False:
         sensor_monitor = args.sensor_monitor if args.sensor_monitor is not True else True
+
+    odor_classifier = False
+    if args.odor_classifier is not False:
+        if args.odor_mode == "none":
+            parser.error("--odor-classifier requires --odor-mode continuous or discrete")
+        odor_classifier = (
+            args.odor_classifier if args.odor_classifier is not True else True
+        )
 
     session = TeleopSession(
         env=args.env,
@@ -1093,6 +1176,7 @@ def main(argv=None) -> int:
         odor_mode=args.odor_mode,
         mox_model=args.mox_model,
         vcc=args.vcc,
+        odor_classifier=odor_classifier,
     )
     try:
         session.run_interactive(device_name=args.device)
