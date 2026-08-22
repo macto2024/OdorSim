@@ -48,6 +48,20 @@ python -m odor_sim.bridge.teleop \
   --odor-mode continuous --odor-monitor
 ```
 
+Teleop with **live ScentFormer odor classification** (OVLA pick-place, six Excel VOCs, multi-window panel):
+
+```bash
+python -m odor_sim.bridge.teleop \
+  --env ClassifyLiquidPlaceOVLA \
+  --liquids ethanol toluene --target-liquid ethanol --place-target plate \
+  --device keyboard \
+  --odor-mode continuous \
+  --odor-classifier \
+  --sensor-monitor
+```
+
+Requires `torch`, the default eight-sensor MOX array, and checkpoint `Smellnet_chkpt/phase_b_best_loss.pt`. A separate matplotlib window shows fixed-window predictions (3/5/7/10/15/20 s) batched on GPU, plus ground-truth cup labels (left/right). Details: [guides/teleop.md](guides/teleop.md).
+
 Then optionally synthesize other MOX streams and convert to LeRobot — see [guides/lerobot.md](guides/lerobot.md).
 
 ## Guides

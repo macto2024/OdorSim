@@ -52,6 +52,26 @@ python -m odor_sim.bridge.teleop \
   --place-target plate --device keyboard --odor-monitor
 ```
 
+## ClassifyLiquidPlaceOVLA + live ScentFormer
+
+OVLA layout: matched white cups, smell is the only cue. Liquids must be from the six Excel VOCs when using the classifier: `ethanol`, `methanol`, `acetone`, `acetic_acid`, `ethyl_acetate`, `toluene`.
+
+`--odor-classifier` loads `Smellnet_chkpt/phase_b_best_loss.pt` and runs batched inference on all ready fixed windows (3/5/7/10/15/20 s) from live MOX voltages (training-time preprocessing: `(V - baseline) / baseline`). Requires `--odor-mode continuous` or `discrete`, `torch`, and the default eight-sensor MOX array (omit `--mox-model`).
+
+```bash
+python -m odor_sim.bridge.teleop \
+  --env ClassifyLiquidPlaceOVLA \
+  --liquids ethanol toluene --target-liquid ethanol --place-target plate \
+  --device keyboard \
+  --odor-mode continuous \
+  --odor-classifier \
+  --sensor-monitor
+```
+
+Opens a second matplotlib window with one row per window length (top gas + confidence). After each reset, the panel shows ground truth (`left` / `right` cup → liquid). The terminal HUD includes e.g. `smell@20s=ethanol 94%` when the 20 s window is ready.
+
+Optional: `--odor-classifier /path/to/phase_b_best_loss.pt` for a custom checkpoint; pass `device` via `odor_sim.make(..., odor_classifier={"device": "cuda"})` when scripting.
+
 ## Live odor modes
 
 Teleop always records **ppm** and **e-nose mode**. With `--odor-mode continuous` or `discrete`, it also records live MOX voltage (same model as offline synthesis).
@@ -88,12 +108,13 @@ datasets/teleop/episode_YYYYMMDD_HHMMSS/
 
 ## Important CLI options
 
-- `--env`: `OdorLift` (default), `ClassifyLiquid`, `ClassifyLiquidPlace`
+- `--env`: `OdorLift` (default), `ClassifyLiquid`, `ClassifyLiquidPlace`, `ClassifyLiquidPlaceOVLA`
 - `--objects` / `--target-object`: `OdorLift`
 - `--liquids` / `--target-liquid` / `--place-target`: liquid tasks
 - `--scenario`: default `10x6_uniform`
 - `--device`: `keyboard` or `spacemouse`
 - `--odor-mode`: `none` | `continuous` | `discrete`
+- `--odor-classifier` [`CKPT`]: live ScentFormer panel (needs `--odor-mode continuous|discrete`)
 - `--mox-model`: omit = fixed eight; `all` = all 17; e.g. `--mox-model 101 TGS2600`
 - `--odor-monitor` / `--sensor-monitor`: `log` | `plot` | both (no value)
 - `--out-dir`, `--no-frames`, `--camera-size`, `--success-hold-steps`, `--no-bridge`
