@@ -204,6 +204,12 @@ def make(
     load_resistance: "float | None" = None,
     vcc: float = 5.0,
     kill_stale_gaden: bool = True,
+    source_nominal_ppm: "dict[str, float] | None" = None,
+    emission_scale: float = 0.06,
+    concentration_exponent: float = 0.5,
+    filaments_per_second: int = 15,
+    buoyancy_tau_s: float = 0.0,
+    original_terminal_velocity_enabled: bool = False,
     **env_kwargs,
 ) -> OdorCosimSession:
     """Construct an odor co-simulation session.
@@ -254,6 +260,9 @@ def make(
         kill_stale_gaden: if True (default), kill other ``rt_server`` processes
             before starting. Parallel collectors must set False and isolate via
             ``ROS_DOMAIN_ID``.
+        source_nominal_ppm: optional object-id to nominal source-condition map.
+            When supplied, use the separated empirical emission model shared
+            with encoder collection instead of each recipe's legacy strength.
         **env_kwargs: forwarded to the env constructor (e.g. ``robots``,
             ``has_renderer``, ``control_freq``, ``enose_site_offset``).
 
@@ -315,7 +324,19 @@ def make(
     monitor = None
     try:
         if export:
-            scene_path = inner_env.scene_builder.export_gaden_scene(config_dir, scene_id=scene_id)
+            if source_nominal_ppm:
+                inner_env.scene_builder.configure_calibrated_emission(
+                    source_nominal_ppm,
+                    emission_scale=emission_scale,
+                    concentration_exponent=concentration_exponent,
+                    filaments_per_second=filaments_per_second,
+                )
+            scene_path = inner_env.scene_builder.export_gaden_scene(
+                config_dir,
+                scene_id=scene_id,
+                buoyancy_tau_s=buoyancy_tau_s,
+                original_terminal_velocity_enabled=original_terminal_velocity_enabled,
+            )
             session_kwargs["scene_path"] = scene_path
 
         want_server = auto_start_gaden or connect_only

@@ -22,6 +22,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["ruff"]
 analysis = ["matplotlib", "scipy"]
+rlds = [
+    "numpy==1.26.4",
+    "tensorflow-cpu==2.18.1",
+    "tensorflow-datasets==4.9.7",
+    "tensorflow-metadata==1.16.1",
+    "protobuf>=4.25.2,<6",
+    "cffi",
+]
 
 [tool.setuptools.package-data]
 odor_sim = ["config/*.yaml"]

@@ -241,3 +241,42 @@ class GadenServerManager:
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+
+class IsolatedGadenServerManager(GadenServerManager):
+    """Launch GADEN through a private alias for parallel ROS-domain workers.
+
+    Legacy collectors globally clean processes whose command line contains the
+    installed ``rt_server`` path. The private alias prevents an older collector
+    from terminating this worker; ROS_DOMAIN_ID provides message isolation.
+    """
+
+    def __init__(self, *args, worker_id: str | int, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.worker_id = str(worker_id)
+
+    def _command(self) -> list[str]:
+        installed = (
+            _REPO_ROOT / "ros2_ws/install/odor_gaden_rt/lib/odor_gaden_rt/rt_server"
+        )
+        if not installed.is_file():
+            raise FileNotFoundError(f"odor_gaden_rt executable not found: {installed}")
+        safe_worker = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in self.worker_id
+        )
+        alias = _REPO_ROOT / ".runtime/parallel_gaden" / f"collector_{safe_worker}"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        if alias.is_symlink() and alias.resolve() != installed.resolve():
+            alias.unlink()
+        if not alias.exists():
+            alias.symlink_to(installed)
+        command = [
+            str(alias), "--ros-args",
+            "-p", f"scenarioPath:={self.scenario_path}",
+            "-p", f"sceneID:={self.scene_id}",
+            "-p", f"stepOnTimer:={'true' if self.step_on_timer else 'false'}",
+            "-p", f"publishMarkers:={'true' if self.publish_markers else 'false'}",
+        ]
+        command.extend(self.extra_ros_args)
+        return command

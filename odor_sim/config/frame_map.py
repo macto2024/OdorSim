@@ -22,10 +22,10 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-# robosuite table center defaults to (0, 0, 0.8); map it to this GADEN point,
-# which is where the Phase 2 test source sits in the 10x6 room.
+# robosuite's table top defaults to (0, 0, 0.8). Keep the same physical
+# elevation in GADEN and place the table workspace at (x=2, y=3) in the room.
 _DEFAULT_ROBOSUITE_ANCHOR = np.array([0.0, 0.0, 0.8])
-_DEFAULT_GADEN_ANCHOR = np.array([2.0, 3.0, 0.5])
+_DEFAULT_GADEN_ANCHOR = np.array([2.0, 3.0, 0.8])
 
 
 @dataclass
