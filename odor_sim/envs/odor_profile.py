@@ -15,6 +15,7 @@ any GADEN compute.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 from odor_sim.config.gas_types import GasType, MOX_SUPPORTED, gaden_name, parse_gas_type
 
@@ -26,6 +27,41 @@ _PPM_CENTER_MIN = 5.0
 _PPM_CENTER_MAX = 40.0
 _FILAMENTS_MIN = 5
 _FILAMENTS_MAX = 40
+
+
+def calibrated_emission_parameters(
+    nominal_ppm: float,
+    *,
+    emission_scale: float = 0.06,
+    concentration_exponent: float = 0.5,
+    filaments_per_second: int = 15,
+) -> dict[str, float | int]:
+    """Return the separated empirical source controls used by encoder data.
+
+    ``nominal_ppm`` is a source condition, not the concentration measured at
+    the e-nose. The local-ppm calibration maps desired local ppm back to this
+    source condition before this function is called.
+    """
+    nominal_ppm = float(nominal_ppm)
+    emission_scale = float(emission_scale)
+    concentration_exponent = float(concentration_exponent)
+    filaments_per_second = int(filaments_per_second)
+    if not math.isfinite(nominal_ppm) or nominal_ppm <= 0:
+        raise ValueError("nominal_ppm must be finite and positive")
+    if not math.isfinite(emission_scale) or emission_scale <= 0:
+        raise ValueError("emission_scale must be finite and positive")
+    if not math.isfinite(concentration_exponent) or concentration_exponent <= 0:
+        raise ValueError("concentration_exponent must be finite and positive")
+    if filaments_per_second <= 0:
+        raise ValueError("filaments_per_second must be positive")
+    return {
+        "filament_ppm_center": (
+            emission_scale
+            * 10.0
+            * (nominal_ppm / 10.0) ** concentration_exponent
+        ),
+        "num_filaments_sec": filaments_per_second,
+    }
 
 
 @dataclass(frozen=True)
@@ -43,6 +79,8 @@ class VOCComponent:
     gas_type: GasType
     strength: float = 0.5
     local_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    filament_ppm_center_override: float | None = None
+    num_filaments_sec_override: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "gas_type", parse_gas_type(self.gas_type))
@@ -50,13 +88,30 @@ class VOCComponent:
             raise ValueError(f"strength must be in [0, 1], got {self.strength}")
         if len(self.local_offset) != 3:
             raise ValueError("local_offset must be a 3-tuple (x, y, z)")
+        if (
+            self.filament_ppm_center_override is not None
+            and (
+                not math.isfinite(self.filament_ppm_center_override)
+                or self.filament_ppm_center_override <= 0
+            )
+        ):
+            raise ValueError("filament_ppm_center must be finite and positive")
+        if (
+            self.num_filaments_sec_override is not None
+            and self.num_filaments_sec_override < 1
+        ):
+            raise ValueError("num_filaments_sec must be a positive integer")
 
     @property
     def filament_ppm_center(self) -> float:
+        if self.filament_ppm_center_override is not None:
+            return float(self.filament_ppm_center_override)
         return _PPM_CENTER_MIN + self.strength * (_PPM_CENTER_MAX - _PPM_CENTER_MIN)
 
     @property
     def num_filaments_sec(self) -> int:
+        if self.num_filaments_sec_override is not None:
+            return int(self.num_filaments_sec_override)
         return int(round(_FILAMENTS_MIN + self.strength * (_FILAMENTS_MAX - _FILAMENTS_MIN)))
 
     @property
@@ -110,7 +165,8 @@ class OdorProfile:
         """Build from a list of dicts/tuples.
 
         Each entry may be:
-          - a dict: {gas_type, strength?, local_offset?}
+          - a dict: {gas_type, strength?, local_offset?,
+                     filament_ppm_center?, num_filaments_sec?}
           - a tuple/list: (gas_type, strength?, local_offset?)
         """
         components: list[VOCComponent] = []
@@ -121,6 +177,14 @@ class OdorProfile:
                         gas_type=parse_gas_type(entry["gas_type"]),
                         strength=float(entry.get("strength", 0.5)),
                         local_offset=tuple(entry.get("local_offset", (0.0, 0.0, 0.0))),
+                        filament_ppm_center_override=(
+                            float(entry["filament_ppm_center"])
+                            if "filament_ppm_center" in entry else None
+                        ),
+                        num_filaments_sec_override=(
+                            int(entry["num_filaments_sec"])
+                            if "num_filaments_sec" in entry else None
+                        ),
                     )
                 )
             elif isinstance(entry, (tuple, list)):

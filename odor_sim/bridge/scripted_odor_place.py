@@ -1,12 +1,11 @@
 """Scripted smell → decide → pick-place collector for ClassifyLiquidPlaceOVLA.
 
-Two identical porcelain cups with ScentFormer VOC liquids. The arm hovers
-above each cup, SAMPLE-holds for ``sniff_duration_s`` (default 10 s) so the
-e-nose can respond, then:
+Two identical porcelain cups with continuously active physical GADEN sources.
+The arm hovers above each cup for ``sniff_duration_s`` (default 10 s) so the
+continuous e-nose can respond, then:
 
 * if that cup is the instructed liquid → grasp and place on the plate
-* otherwise → move aside, FILTER-hold for ``1.5 * sniff_duration_s``, try
-  the next cup
+* otherwise → move directly to the next cup while preserving MOX state
 * if no cup matches the instruction → return to the post-reset home pose
 
 The first cup is uniformly random (``target_first_frac=0.5``). Ground-truth
@@ -23,6 +22,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import time
@@ -32,8 +32,6 @@ from pathlib import Path
 import numpy as np
 
 from odor_sim.bridge.scripted_place import (
-    DEFAULT_ACTION_NOISE,
-    DEFAULT_ACTION_NOISE_FLOOR,
     DEFAULT_GRASP_XY_TOL,
     DEFAULT_GRASP_Z_TOL,
     DEFAULT_MIN_SPEED,
@@ -65,17 +63,32 @@ from odor_sim.recording.odor_events import (
     PHASE_SNIFF_HOLD,
     write_odor_events,
 )
+from odor_sim.envs.registry import resolve_scenario
+from odor_sim.odor_encoder.wind import write_isolated_config, zero_wind_profile
 from odor_sim.runtime.session import FILTER, IDLE, SAMPLE
 
 DEFAULT_OUT_DIR = "datasets/teleop/odor_place_scripted"
 DEFAULT_LIQUIDS = DEFAULT_ODOR_CONFIG.voc_pool[:2]
 DEFAULT_SAMPLE_HOLD_S = DEFAULT_ODOR_CONFIG.sniff_duration_s
 DEFAULT_FILTER_HOLD_S = DEFAULT_ODOR_CONFIG.filter_s
-DEFAULT_SNIFF_Z = 0.12  # meters above cup body center
+DEFAULT_SNIFF_Z = 0.08  # safe gripper height; e-nose offset gives ~4 cm source distance
+# Panda grip-site +Z points downward in the default grasp orientation.
+DEFAULT_ENOSE_SITE_OFFSET = (0.0, 0.0, 0.04)
 DEFAULT_FILTER_OFFSET_Y = 0.0  # unused; FILTER hovers above the plate (in-frame)
 # When the instructed VOC is on the table: P(sniff it first). 0.5 = uniform.
 DEFAULT_TARGET_FIRST_FRAC = 0.5
+DEFAULT_DECISION_WINDOW_S = 1.0
+DEFAULT_DECISION_MIN_TOTAL_PPM = 5.0
+DEFAULT_DECISION_DOMINANCE = 0.70
+DEFAULT_DECISION_MIN_PASS_FRACTION = 0.80
+DEFAULT_OVLA_ACTION_NOISE = 0.20
+DEFAULT_OVLA_ACTION_NOISE_FLOOR = 0.15
 OVLA_ENV_NAME = "ClassifyLiquidPlaceOVLA"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOCAL_PPM_CALIBRATION = (
+    Path(__file__).resolve().parents[1]
+    / "config/phase_b_local_ppm_exp0p5_scale0p06_fps15.json"
+)
 
 
 def liquid_display_name(catalog: str) -> str:
@@ -118,14 +131,14 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         has_renderer: bool = False,
         render_camera: str = "agentview",
         seed: "int | None" = None,
-        odor_mode: str = "discrete",
+        odor_mode: str = "continuous",
         sample_hold_s: "float | None" = None,
         filter_hold_s: "float | None" = None,
         sniff_duration_s: "float | None" = None,
         sniff_z: float = DEFAULT_SNIFF_Z,
         filter_offset_y: float = DEFAULT_FILTER_OFFSET_Y,
         # P(sniff the instructed cup first) when it is on the table.
-        # Remainder: sniff a distractor first, FILTER, then the target.
+        # Remainder: sniff a distractor first, then move directly to target.
         target_first_frac: float = DEFAULT_TARGET_FIRST_FRAC,
         odor_config: "OdorConfig | None" = None,
         mox_models=None,
@@ -138,8 +151,8 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         slow_radius: float = DEFAULT_SLOW_RADIUS,
         min_speed: float = DEFAULT_MIN_SPEED,
         min_speed_dist: float = DEFAULT_MIN_SPEED_DIST,
-        action_noise: float = DEFAULT_ACTION_NOISE,
-        action_noise_floor: float = DEFAULT_ACTION_NOISE_FLOOR,
+        action_noise: float = DEFAULT_OVLA_ACTION_NOISE,
+        action_noise_floor: float = DEFAULT_OVLA_ACTION_NOISE_FLOOR,
         grasp_xy_tol: float = DEFAULT_GRASP_XY_TOL,
         grasp_z_tol: float = DEFAULT_GRASP_Z_TOL,
         press_z: float = DEFAULT_PRESS_Z,
@@ -163,6 +176,22 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         scene_id: "str | None" = None,
         server_log_dir: "str | Path | None" = None,
         worker_id: int = 0,
+        transition_mode: str = "direct",
+        desired_local_ppm_by_object: "dict[str, float] | None" = None,
+        source_nominal_ppm: "dict[str, float] | None" = None,
+        source_base_local_ppm: "float | None" = None,
+        source_pair_ratio: "float | None" = None,
+        decision_window_s: float = DEFAULT_DECISION_WINDOW_S,
+        decision_min_total_ppm: float = DEFAULT_DECISION_MIN_TOTAL_PPM,
+        decision_dominance_threshold: float = DEFAULT_DECISION_DOMINANCE,
+        decision_min_pass_fraction: float = DEFAULT_DECISION_MIN_PASS_FRACTION,
+        emission_scale: float = 0.06,
+        concentration_exponent: float = 0.5,
+        filaments_per_second: int = 15,
+        wind_regime: str = "zero",
+        buoyancy_tau_s: float = 0.0,
+        original_terminal_velocity_enabled: bool = False,
+        enose_site_offset=DEFAULT_ENOSE_SITE_OFFSET,
     ):
         import odor_sim as odorsim
         from robosuite.controllers import load_composite_controller_config
@@ -221,6 +250,11 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         self.sniff_z = float(sniff_z)
         self.filter_offset_y = float(filter_offset_y)
         self.target_first_frac = float(np.clip(target_first_frac, 0.0, 1.0))
+        self.planned_target_first = (
+            bool(self.target_first_frac)
+            if self.target_present and self.target_first_frac in (0.0, 1.0)
+            else None
+        )
 
         self.pos_gain = float(pos_gain)
         self.max_pos_action = float(max_pos_action)
@@ -254,6 +288,49 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             None if server_log_dir is None else Path(server_log_dir)
         )
         self.worker_id = int(worker_id)
+        self.transition_mode = str(transition_mode)
+        if self.transition_mode not in ("direct", "physical_filter"):
+            raise ValueError("transition_mode must be direct|physical_filter")
+        if wind_regime != "zero":
+            raise ValueError("OVLA main collection currently supports wind_regime='zero'")
+        self.wind_regime = wind_regime
+        self.buoyancy_tau_s = float(buoyancy_tau_s)
+        self.original_terminal_velocity_enabled = bool(original_terminal_velocity_enabled)
+        self.enose_site_offset = tuple(float(value) for value in enose_site_offset)
+        self.emission_scale = float(emission_scale)
+        self.concentration_exponent = float(concentration_exponent)
+        self.filaments_per_second = int(filaments_per_second)
+        self.desired_local_ppm_by_object = {
+            str(k): float(v) for k, v in (desired_local_ppm_by_object or {}).items()
+        }
+        if not self.desired_local_ppm_by_object:
+            self.desired_local_ppm_by_object = {str(name): 30.0 for name in liquids}
+        self.source_nominal_ppm = {
+            str(k): float(v) for k, v in (source_nominal_ppm or {}).items()
+        }
+        self.source_base_local_ppm = (
+            None if source_base_local_ppm is None else float(source_base_local_ppm)
+        )
+        self.source_pair_ratio = (
+            None if source_pair_ratio is None else float(source_pair_ratio)
+        )
+        self.decision_window_s = max(0.05, float(decision_window_s))
+        self.decision_min_total_ppm = max(0.0, float(decision_min_total_ppm))
+        self.decision_dominance_threshold = float(
+            np.clip(decision_dominance_threshold, 0.0, 1.0)
+        )
+        self.decision_min_pass_fraction = float(
+            np.clip(decision_min_pass_fraction, 0.0, 1.0)
+        )
+        if not self.source_nominal_ppm:
+            calibration = json.loads(DEFAULT_LOCAL_PPM_CALIBRATION.read_text())
+            self.source_nominal_ppm = {
+                name: float(np.exp(
+                    (np.log(local_ppm) - float(calibration["log_intercept"]))
+                    / float(calibration["log_slope"])
+                ))
+                for name, local_ppm in self.desired_local_ppm_by_object.items()
+            }
 
         # Unused parent fields (kept so inherited helpers don't AttributeError).
         self.cups = list(liquids)
@@ -304,6 +381,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             "reward_shaping": True,
             "horizon": 100000,
             "use_camera_obs": True,
+            "enose_site_offset": self.enose_site_offset,
             **cam_kwargs,
         }
         if seed is not None:
@@ -318,6 +396,26 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             make_extra["scene_id"] = str(self._scene_id_override)
         if self._server_log_dir is not None:
             make_extra["server_log_dir"] = str(self._server_log_dir)
+        if want_odor:
+            runtime_root = (
+                _REPO_ROOT / ".runtime" / "odor_place"
+                / f"worker_{self.worker_id}" / str(self._scene_id_override or uuid.uuid4())
+            )
+            source_config = resolve_scenario("10x6_uniform", "config1")
+            private_config = write_isolated_config(
+                source_config,
+                runtime_root / "config",
+                zero_wind_profile(max(300.0, self.max_episode_steps / self.control_freq + 30.0)),
+            )
+            make_extra["scenario"] = str(private_config)
+            make_extra.update(
+                source_nominal_ppm=self.source_nominal_ppm,
+                emission_scale=self.emission_scale,
+                concentration_exponent=self.concentration_exponent,
+                filaments_per_second=self.filaments_per_second,
+                buoyancy_tau_s=self.buoyancy_tau_s,
+                original_terminal_velocity_enabled=self.original_terminal_velocity_enabled,
+            )
         self.cosim = odorsim.make(
             self.env_name,
             auto_start_gaden=want_odor,
@@ -331,7 +429,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         )
         self.env = self.cosim.env
         self.gas_types = list(getattr(self.env, "gas_types", []) or [])
-        self.scenario = "10x6_uniform"
+        self.scenario = "10x6_uniform_zero_wind"
         self.scene_id = getattr(self.cosim, "scene_id", self.env_name)
         self.home_pos: "np.ndarray | None" = None
         self._active_enose = IDLE
@@ -387,7 +485,28 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
             "odor_mode": self.odor_mode,
             "collector": "scripted_odor_place",
             "env_name": self.env_name,
-            "schema_version": "ovla-odor-0.1",
+            "schema_version": "ovla-odor-0.3",
+            "transition_mode": self.transition_mode,
+            "planned_target_first": self.planned_target_first,
+            "desired_local_ppm_by_object": self.desired_local_ppm_by_object,
+            "nominal_source_condition_by_object": self.source_nominal_ppm,
+            "source_base_local_ppm": self.source_base_local_ppm,
+            "source_pair_ratio": self.source_pair_ratio,
+            "source_condition_sampling": "paired_symmetric_log_uniform",
+            "decision_window_s": self.decision_window_s,
+            "decision_min_total_ppm": self.decision_min_total_ppm,
+            "decision_dominance_threshold": self.decision_dominance_threshold,
+            "decision_min_pass_fraction": self.decision_min_pass_fraction,
+            "mox_reset_between_sniffs": False,
+            "source_emission_model": "separated_power_law",
+            "emission_scale": self.emission_scale,
+            "concentration_exponent": self.concentration_exponent,
+            "filaments_per_second": self.filaments_per_second,
+            "wind_regime": self.wind_regime,
+            "original_terminal_velocity_enabled": self.original_terminal_velocity_enabled,
+            "buoyancy_tau_s": self.buoyancy_tau_s,
+            "ovla_odor_interface": "scentformer_embedding_only",
+            "enose_site_offset": list(self.enose_site_offset),
             **self.odor_config.to_meta(),
             "mox_model": mox_models[0] if mox_models else None,
         }
@@ -513,6 +632,51 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         aside[2] = max(float(cur[2]), home_z)
         return aside
 
+    def _recent_decision_evidence(
+        self,
+        recorder,
+        *,
+        cup_id: str,
+        end_step: int,
+    ) -> dict:
+        """Summarize the causal ppm interval immediately before a decision."""
+        window_steps = max(1, int(round(self.decision_window_s * self.control_freq)))
+        first = max(0, int(end_step) - window_steps + 1)
+        recent = np.stack(
+            [row["ppm"] for row in recorder._rows[first : int(end_step) + 1]]
+        ).astype(float)
+        gas_index = self.gas_types.index(cup_id)
+        total = np.sum(recent, axis=1)
+        intended = recent[:, gas_index]
+        dominance = np.divide(
+            intended,
+            total,
+            out=np.zeros_like(intended),
+            where=total > 1e-9,
+        )
+        presence_pass = total >= self.decision_min_total_ppm
+        dominance_pass = dominance >= self.decision_dominance_threshold
+        median_total = float(np.median(total))
+        median_intended = float(np.median(intended))
+        median_dominance = float(np.median(dominance))
+        presence_fraction = float(np.mean(presence_pass))
+        dominance_fraction = float(np.mean(dominance_pass))
+        accepted = bool(
+            median_total >= self.decision_min_total_ppm
+            and median_dominance >= self.decision_dominance_threshold
+            and presence_fraction >= self.decision_min_pass_fraction
+            and dominance_fraction >= self.decision_min_pass_fraction
+        )
+        return {
+            "decision_window_s": self.decision_window_s,
+            "median_total_ppm": median_total,
+            "median_intended_ppm": median_intended,
+            "median_dominance": median_dominance,
+            "presence_pass_fraction": presence_fraction,
+            "dominance_pass_fraction": dominance_fraction,
+            "evidence_accepted": accepted,
+        }
+
     def _sniff_cup(self, recorder, obs, cup_id: str):
         """Approach cup, SAMPLE-hold, return (obs, is_instructed)."""
         self._sniff_object_id = cup_id
@@ -539,7 +703,16 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         )
         end_step = len(recorder) - 1
         is_match = cup_id == self.instructed_liquid
-        self._log(f"sniff decision GT: match={is_match} (instructed={self.instructed_liquid!r})")
+        evidence = self._recent_decision_evidence(
+            recorder, cup_id=cup_id, end_step=end_step
+        )
+        self._log(
+            f"sniff decision GT: match={is_match} "
+            f"dominance={evidence['median_dominance']:.3f} "
+            f"total={evidence['median_total_ppm']:.2f}ppm "
+            f"accepted={evidence['evidence_accepted']} "
+            f"(instructed={self.instructed_liquid!r})"
+        )
         enose_pos = self.env.get_enose_site_pose()[0]
         cup_pos = self.env.get_object_world_poses()[cup_id][0]
         self._odor_events.append(
@@ -556,11 +729,62 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
                         np.asarray(enose_pos, dtype=float) - np.asarray(cup_pos, dtype=float)
                     )
                 ),
+                **evidence,
             }
         )
         self._active_enose = IDLE
         self._active_phase = PHASE_CONTROL
-        return obs, True, is_match
+        return obs, True, is_match, bool(evidence["evidence_accepted"])
+
+    def _transit_above_next_cup(self, recorder, obs, cup_id: str):
+        """Move between cups without sweeping the gripper through a mug.
+
+        This is still a direct, continuous-sensing transition: it adds no
+        filter dwell and never resets the MOX state.  The explicit vertical
+        raise is necessary because a lateral move at the sniff height can tip
+        the next cup before the grasp begins.
+        """
+        self._sniff_object_id = None
+        self._active_enose = IDLE
+        self._active_phase = PHASE_CONTROL
+
+        sniff = self._sniff_hover_pos(cup_id)
+        current = self._eef_pos(obs)
+        home_z = float(self.home_pos[2]) if self.home_pos is not None else float(current[2])
+        safe_z = max(home_z, float(current[2]) + 0.12, float(sniff[2]) + 0.12)
+
+        raised = np.array([current[0], current[1], safe_z], dtype=float)
+        self._log(f"inter-cup raise -> {self._fmt_xyz(raised)}")
+        obs, ok = self._go_to(
+            recorder,
+            obs,
+            raised,
+            GRIPPER_OPEN,
+            track_fingers=False,
+            phase="intercup_raise",
+        )
+        if not ok:
+            return obs, False
+
+        # Stage at the high home XY rather than directly over the next mug.
+        # A vertical descent over its center makes the Panda fingers meet the
+        # rim; the established diagonal home-to-sniff approach stays clear.
+        if self.home_pos is not None:
+            staging_xy = np.asarray(self.home_pos[:2], dtype=float)
+        else:
+            staging_xy = np.zeros(2, dtype=float)
+        above_next = np.array([staging_xy[0], staging_xy[1], safe_z], dtype=float)
+        self._log(
+            f"inter-cup high staging for {cup_id!r} -> {self._fmt_xyz(above_next)}"
+        )
+        return self._go_to(
+            recorder,
+            obs,
+            above_next,
+            GRIPPER_OPEN,
+            track_fingers=False,
+            phase="intercup_translate",
+        )
 
     def _filter_between(self, recorder, obs):
         """Move aside and FILTER-hold so the MOX can decay before the next sniff."""
@@ -608,7 +832,7 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         """Ordered cup ids to sniff this episode.
 
         When the instructed VOC is on the table:
-          * with prob ``target_first_frac`` (default 0.4) sniff it first
+          * with prob ``target_first_frac`` (default 0.5) sniff it first
           * otherwise sniff a distractor first, then the target (then any rest)
 
         When absent, shuffle all on-table cups (no target to prioritize).
@@ -872,9 +1096,11 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
         for i, cup_id in enumerate(order):
             if len(recorder) >= self.max_episode_steps:
                 return fail("episode cap")
-            obs, ok, is_match = self._sniff_cup(recorder, obs, cup_id)
+            obs, ok, is_match, evidence_ok = self._sniff_cup(recorder, obs, cup_id)
             if not ok:
                 return fail(f"sniff approach failed for {cup_id}")
+            if not evidence_ok:
+                return fail(f"insufficient physical odor evidence for {cup_id}")
             if is_match:
                 obs, ok = self._pick_and_place(
                     recorder, obs, cup_id, from_sniff=True
@@ -883,12 +1109,20 @@ class ScriptedOdorPlaceCollector(ScriptedPlaceCollector):
                     return fail("pick_place failed")
                 placed = True
                 break
-            # Wrong cup (or instructed absent): purge before the next sniff,
-            # or before going home after the last distractor.
-            if i < len(order) - 1 or not self.target_present:
+            # Default deployment path preserves carryover and goes directly to
+            # cup 2. A physical cleaner-location dwell remains an ablation.
+            if self.transition_mode == "physical_filter" and (
+                i < len(order) - 1 or not self.target_present
+            ):
                 obs, ok = self._filter_between(recorder, obs)
                 if not ok:
                     return fail("filter aside failed")
+            elif self.transition_mode == "direct" and i < len(order) - 1:
+                obs, ok = self._transit_above_next_cup(
+                    recorder, obs, order[i + 1]
+                )
+                if not ok:
+                    return fail("inter-cup transit failed")
 
         if placed:
             if self.target_present and not self.env._check_success():
@@ -981,7 +1215,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no-frames", action="store_true")
     p.add_argument("--render", action="store_true")
     p.add_argument("--max-episode-steps", type=int, default=4000)
-    p.add_argument("--odor-mode", default="discrete", choices=("discrete", "continuous", "none"))
+    p.add_argument("--odor-mode", default="continuous", choices=("discrete", "continuous", "none"))
+    p.add_argument("--transition-mode", default="direct", choices=("direct", "physical_filter"))
     p.add_argument(
         "--sniff-duration",
         type=float,
@@ -1008,6 +1243,18 @@ def build_argparser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--sniff-z", type=float, default=DEFAULT_SNIFF_Z)
+    p.add_argument("--decision-window-s", type=float, default=DEFAULT_DECISION_WINDOW_S)
+    p.add_argument(
+        "--decision-min-total-ppm", type=float, default=DEFAULT_DECISION_MIN_TOTAL_PPM
+    )
+    p.add_argument(
+        "--decision-dominance-threshold", type=float, default=DEFAULT_DECISION_DOMINANCE
+    )
+    p.add_argument(
+        "--decision-min-pass-fraction",
+        type=float,
+        default=DEFAULT_DECISION_MIN_PASS_FRACTION,
+    )
     p.add_argument(
         "--filter-offset-y",
         type=float,
@@ -1021,11 +1268,15 @@ def build_argparser() -> argparse.ArgumentParser:
         help=(
             "When the instructed VOC is on the table, probability of sniffing "
             f"it first (default {DEFAULT_TARGET_FIRST_FRAC}). Remainder sniff a "
-            "distractor first, FILTER, then the target."
+            "distractor first, then move directly to the target."
         ),
     )
     p.add_argument("--quiet", action="store_true")
     add_motion_shaping_args(p)
+    p.set_defaults(
+        action_noise=DEFAULT_OVLA_ACTION_NOISE,
+        action_noise_floor=DEFAULT_OVLA_ACTION_NOISE_FLOOR,
+    )
     return p
 
 
@@ -1050,6 +1301,11 @@ def main(argv=None) -> int:
         sniff_z=float(args.sniff_z),
         filter_offset_y=float(args.filter_offset_y),
         target_first_frac=float(args.target_first_frac),
+        transition_mode=args.transition_mode,
+        decision_window_s=float(args.decision_window_s),
+        decision_min_total_ppm=float(args.decision_min_total_ppm),
+        decision_dominance_threshold=float(args.decision_dominance_threshold),
+        decision_min_pass_fraction=float(args.decision_min_pass_fraction),
         max_episode_steps=int(args.max_episode_steps),
         verbose=not args.quiet,
         **motion_shaping_kwargs(args),

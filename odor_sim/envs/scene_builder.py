@@ -14,7 +14,8 @@ ROS. It:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +23,7 @@ import yaml
 
 from odor_sim.config.frame_map import FrameMap
 from odor_sim.envs.odor_object import OdorObject
-from odor_sim.envs.odor_profile import VOCComponent
+from odor_sim.envs.odor_profile import VOCComponent, calibrated_emission_parameters
 
 # GADEN per-source simulation defaults (mirror scenarios/10x6_uniform sim.yaml).
 _SIM_DEFAULTS = {
@@ -33,6 +34,8 @@ _SIM_DEFAULTS = {
     "filamentInitialSigma": 10,
     "filamentGrowthGamma": 10,
     "filamentNoise_std": 0.02,
+    "buoyancyTau": 0.0,
+    "originalTerminalVelocity": False,
     "expectedNumIterations": 24000,
     "saveResults": False,
     "saveDeltaTime": 0.5,
@@ -113,6 +116,40 @@ class SceneBuilder:
     def gas_types(self) -> list:
         return [s.gas_type for s in self._sources]
 
+    def configure_calibrated_emission(
+        self,
+        nominal_ppm_by_object: dict[str, float],
+        *,
+        emission_scale: float = 0.06,
+        concentration_exponent: float = 0.5,
+        filaments_per_second: int = 15,
+    ) -> dict[str, dict[str, float | int]]:
+        """Apply the encoder/OVLA separated source model before scene export."""
+        configured: dict[str, dict[str, float | int]] = {}
+        for source in self._sources:
+            if source.object_id not in nominal_ppm_by_object:
+                continue
+            nominal = float(nominal_ppm_by_object[source.object_id])
+            params = calibrated_emission_parameters(
+                nominal,
+                emission_scale=emission_scale,
+                concentration_exponent=concentration_exponent,
+                filaments_per_second=filaments_per_second,
+            )
+            source.component = replace(
+                source.component,
+                filament_ppm_center_override=float(params["filament_ppm_center"]),
+                num_filaments_sec_override=int(params["num_filaments_sec"]),
+            )
+            configured[source.object_id] = {
+                "nominal_source_condition": nominal,
+                **params,
+            }
+        missing = set(nominal_ppm_by_object) - set(configured)
+        if missing:
+            raise ValueError(f"no active GADEN source for objects: {sorted(missing)}")
+        return configured
+
     def gaden_source_positions(self, object_world_poses: dict) -> np.ndarray:
         """Compute GADEN-frame source positions from object world poses.
 
@@ -142,6 +179,9 @@ class SceneBuilder:
         scene_id: str = "scene1",
         initial_positions_gaden=None,
         wind_files: str = "../../wind_simulations/uniform/wind",
+        buoyancy_tau_s: float | None = None,
+        original_terminal_velocity_enabled: bool = False,
+        filament_noise_std: float | None = None,
     ) -> Path:
         """Write per-source ``sim.yaml`` + a ``scene.yaml`` for odor_gaden_rt.
 
@@ -156,6 +196,16 @@ class SceneBuilder:
             initial_positions_gaden: optional (num_sources, 3) initial source
                 positions in GADEN frame. Defaults to the frame-map image of the
                 robosuite origin for every source.
+            buoyancy_tau_s: experimental concentration-dependent buoyancy
+                relaxation time in seconds. ``0`` disables buoyancy. Defaults
+                to zero; it is configurable because it is not yet a
+                validated physical constant.
+            original_terminal_velocity_enabled: re-enable the historical
+                GADEN expression for ablation only. It is dimensionally
+                inconsistent and must remain disabled for main datasets.
+            filament_noise_std: optional GADEN stochastic-motion standard
+                deviation. Defaults to the normal simulation value. Set to
+                zero only for controlled physics validation.
         """
         config_dir = Path(config_dir)
         sims_dir = config_dir / "simulations"
@@ -167,6 +217,14 @@ class SceneBuilder:
             default_pos = self.frame_map.robosuite_to_gaden([0.0, 0.0, 0.8])
             initial_positions_gaden = np.tile(default_pos, (self.num_sources, 1))
         initial_positions_gaden = np.asarray(initial_positions_gaden, dtype=float).reshape(-1, 3)
+        if buoyancy_tau_s is None:
+            buoyancy_tau_s = float(_SIM_DEFAULTS["buoyancyTau"])
+        if not math.isfinite(buoyancy_tau_s) or buoyancy_tau_s < 0:
+            raise ValueError("buoyancy_tau_s must be finite and non-negative")
+        if filament_noise_std is None:
+            filament_noise_std = float(_SIM_DEFAULTS["filamentNoise_std"])
+        if not math.isfinite(filament_noise_std) or filament_noise_std < 0:
+            raise ValueError("filament_noise_std must be finite and non-negative")
 
         scene_sims = []
         for src in self._sources:
@@ -178,10 +236,15 @@ class SceneBuilder:
                     "position": [round(float(v), 4) for v in pos],
                     "gasType": int(src.gas_type),
                 },
-                "filamentPPMcenter": round(float(src.component.filament_ppm_center), 3),
+                # Low-emission calibration/background sources can be below
+                # 0.001 ppm; three-decimal rounding would silently disable them.
+                "filamentPPMcenter": round(float(src.component.filament_ppm_center), 9),
                 "numFilaments_sec": int(src.component.num_filaments_sec),
                 "windLooping": {"loop": False, "from": 0, "to": 0},
                 **_SIM_DEFAULTS,
+                "buoyancyTau": float(buoyancy_tau_s),
+                "originalTerminalVelocity": bool(original_terminal_velocity_enabled),
+                "filamentNoise_std": float(filament_noise_std),
             }
             sim_path = sims_dir / sim_id / "sim.yaml"
             sim_path.parent.mkdir(parents=True, exist_ok=True)

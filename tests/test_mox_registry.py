@@ -164,9 +164,11 @@ class MoxRegistryTests(unittest.TestCase):
         self.assertEqual(clean, 1.0)
         self.assertGreater(half, one)
         self.assertLess(half, clean)
-        self.assertAlmostEqual(
-            sensor._ideal_rs_r0({"acetone": 100.0}),
+        # Runtime sensitivity is not silently clamped at the workbook limit;
+        # physical dataset validation is responsible for flagging out-of-range ppm.
+        self.assertLess(
             sensor._ideal_rs_r0({"acetone": 1000.0}),
+            sensor._ideal_rs_r0({"acetone": 100.0}),
         )
 
     def test_runtime_uses_conductance_power_law_and_additive_mixture(self):

@@ -3,7 +3,8 @@
 Raw episodes store a full control-rate stream (including hover ticks). Sniff
 windows used by ScentFormer / RLDS live in ``odor_events.npz`` + ``odor_events.json``,
 sliced from SAMPLE holds. Phase tags on ``episode.npz['phase']`` let the RLDS
-builder drop sniff/filter hovers without relying on the no-op action filter.
+builder sparsely retain informative sniff HOLD landmarks while dropping the
+remaining sniff/filter ticks without relying on the no-op action filter.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ PHASE_CONTROL = 0
 PHASE_SNIFF_HOLD = 1
 PHASE_FILTER_HOLD = 2
 PHASE_NAMES = ("control", "sniff_hold", "filter_hold")
+DEFAULT_SNIFF_LANDMARKS_S = (0.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 9.0)
 
 
 def phase_name(value: int) -> str:
@@ -87,6 +89,17 @@ def write_odor_events(
                 float(x) for x in np.asarray(ev.get("robot_sniff_pose", [0, 0, 0])).ravel()[:3]
             ],
             "sensor_object_distance": float(ev.get("sensor_object_distance", 0.0)),
+            "decision_window_s": float(ev.get("decision_window_s", 0.0)),
+            "median_total_ppm": float(ev.get("median_total_ppm", 0.0)),
+            "median_intended_ppm": float(ev.get("median_intended_ppm", 0.0)),
+            "median_dominance": float(ev.get("median_dominance", 0.0)),
+            "presence_pass_fraction": float(
+                ev.get("presence_pass_fraction", 0.0)
+            ),
+            "dominance_pass_fraction": float(
+                ev.get("dominance_pass_fraction", 0.0)
+            ),
+            "evidence_accepted": bool(ev.get("evidence_accepted", False)),
         }
         records.append(rec)
 
@@ -121,13 +134,48 @@ def load_odor_events(ep_dir: "str | Path") -> dict:
     }
 
 
-def collapse_keep_mask(phase: np.ndarray, sniff_end_steps: list[int]) -> np.ndarray:
-    """True for control steps plus the last SAMPLE step of each sniff (decision frame)."""
+def sniff_landmark_steps(
+    events: list[dict],
+    *,
+    rate_hz: float,
+    landmarks_s: "tuple[float, ...] | list[float]" = DEFAULT_SNIFF_LANDMARKS_S,
+    jitter_s: float = 0.1,
+    seed: int = 0,
+) -> list[int]:
+    """Return deterministic, causal HOLD landmarks plus each decision frame."""
+    if rate_hz <= 0 or jitter_s < 0:
+        raise ValueError("rate_hz must be positive and jitter_s non-negative")
+    rng = np.random.default_rng(seed)
+    selected: set[int] = set()
+    for event in events:
+        start = int(event["start_step"])
+        end = int(event["end_step"])
+        if end < start:
+            raise ValueError(f"invalid sniff event bounds: {start}..{end}")
+        for seconds in landmarks_s:
+            offset_s = float(seconds)
+            if offset_s < 0:
+                raise ValueError("sniff landmarks must be non-negative")
+            if jitter_s:
+                offset_s += float(rng.uniform(-jitter_s, jitter_s))
+            index = start + int(round(max(0.0, offset_s) * rate_hz))
+            if start <= index < end:
+                selected.add(index)
+        selected.add(end)
+    return sorted(selected)
+
+
+def collapse_keep_mask(
+    phase: np.ndarray,
+    sniff_end_steps: list[int],
+    sniff_landmarks: "list[int] | tuple[int, ...]" = (),
+) -> np.ndarray:
+    """True for control steps and selected SAMPLE HOLD/decision frames."""
     phase = np.asarray(phase, dtype=np.int8).ravel()
     keep = np.ones(phase.shape[0], dtype=bool)
     keep[phase == PHASE_SNIFF_HOLD] = False
     keep[phase == PHASE_FILTER_HOLD] = False
-    for idx in sniff_end_steps:
+    for idx in (*sniff_landmarks, *sniff_end_steps):
         i = int(idx)
         if 0 <= i < keep.shape[0]:
             keep[i] = True

@@ -11,6 +11,7 @@ import pytest
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
+from odor_sim.config.frame_map import FrameMap
 from odor_sim.config.gas_types import EXCEL_VOC_GAS_NAMES
 from odor_sim.recording.odor_config import (
     DEFAULT_ODOR_CONFIG,
@@ -19,13 +20,132 @@ from odor_sim.recording.odor_config import (
     odor_config_from_args,
 )
 from odor_sim.recording.odor_events import (
+    DEFAULT_SNIFF_LANDMARKS_S,
     PHASE_CONTROL,
     PHASE_FILTER_HOLD,
     PHASE_SNIFF_HOLD,
     collapse_keep_mask,
+    sniff_landmark_steps,
     write_odor_events,
 )
-from odor_sim.recording.build_rlds_odor_ovla import attach_odor, collapse_episode_steps
+from odor_sim.recording.build_rlds_odor_ovla import (
+    attach_continuous_odor,
+    attach_odor,
+    collapse_episode_steps,
+)
+from odor_sim.envs.odor_profile import calibrated_emission_parameters
+from odor_sim.bridge.collect_odor_place_oft import (
+    _plan_target_first,
+    _sample_paired_local_ppm,
+)
+from odor_sim.bridge.scripted_odor_place import ScriptedOdorPlaceCollector
+from odor_sim.envs.classify_liquid_place_ovla import ClassifyLiquidPlaceOVLA
+
+
+def test_default_frame_map_preserves_tabletop_height():
+    table_top = np.array([0.0, 0.0, 0.8])
+    expected_gaden = np.array([2.0, 3.0, 0.8])
+
+    direct = FrameMap()
+    from_scenario = FrameMap.from_scenario(
+        "scenarios/10x6_uniform/environment_configurations/config1"
+    )
+
+    np.testing.assert_allclose(direct.robosuite_to_gaden(table_top), expected_gaden)
+    np.testing.assert_allclose(
+        from_scenario.robosuite_to_gaden(table_top), expected_gaden
+    )
+    np.testing.assert_allclose(
+        direct.gaden_to_robosuite(expected_gaden), table_top
+    )
+
+
+def test_half_target_first_plan_is_balanced_and_retry_stable():
+    rng = np.random.default_rng(7)
+    planned = [_plan_target_first(i, 0.5, rng) for i in range(30)]
+    assert planned == [i % 2 == 0 for i in range(30)]
+    assert sum(planned) == 15
+
+    for pair_index in range(30):
+        pair_orders = [
+            _plan_target_first(pair_index + repeat * 30, 0.5, rng)
+            for repeat in range(4)
+        ]
+        assert sum(pair_orders) == 2
+
+    # Once planned, batch collection passes an exact 0/1 probability to every
+    # retry rather than drawing a new order from each attempt's seed.
+    assert _plan_target_first(0, 0.0, rng) is False
+    assert _plan_target_first(1, 1.0, rng) is True
+
+
+def test_paired_source_sampler_is_symmetric_and_stays_calibrated():
+    rng = np.random.default_rng(11)
+    log_ratios = []
+    for _ in range(1000):
+        ppm, base, ratio = _sample_paired_local_ppm(
+            rng,
+            ["ethanol", "acetone"],
+            local_ppm_min=5.0,
+            local_ppm_max=100.0,
+            ratio_min=0.8,
+            ratio_max=1.25,
+        )
+        assert ppm["ethanol"] * ppm["acetone"] == pytest.approx(base**2)
+        assert 5.0 <= ppm["ethanol"] <= 100.0
+        assert 5.0 <= ppm["acetone"] <= 100.0
+        log_ratios.append(np.log(ratio))
+    assert abs(float(np.mean(log_ratios))) < 0.02
+
+
+def test_ovla_cup_slot_spacing_is_between_22_and_30_cm():
+    min_dy = (
+        ClassifyLiquidPlaceOVLA.cup_right_y_range[0]
+        - ClassifyLiquidPlaceOVLA.cup_left_y_range[1]
+    )
+    max_dy = (
+        ClassifyLiquidPlaceOVLA.cup_right_y_range[1]
+        - ClassifyLiquidPlaceOVLA.cup_left_y_range[0]
+    )
+    max_dx = (
+        ClassifyLiquidPlaceOVLA.cup_right_x_range[1]
+        - ClassifyLiquidPlaceOVLA.cup_left_x_range[0]
+    )
+    assert min_dy == pytest.approx(0.22)
+    assert np.hypot(max_dx, max_dy) < 0.30
+
+
+def test_recent_decision_evidence_uses_window_median_not_final_spike():
+    collector = object.__new__(ScriptedOdorPlaceCollector)
+    collector.decision_window_s = 1.0
+    collector.control_freq = 20
+    collector.decision_min_total_ppm = 5.0
+    collector.decision_dominance_threshold = 0.70
+    collector.decision_min_pass_fraction = 0.80
+    collector.gas_types = ["ethanol", "acetone"]
+
+    class Recorder:
+        pass
+
+    recorder = Recorder()
+    recorder._rows = [
+        {"ppm": np.array([4.0, 6.0], dtype=np.float32)} for _ in range(19)
+    ] + [{"ppm": np.array([9.0, 1.0], dtype=np.float32)}]
+    evidence = collector._recent_decision_evidence(
+        recorder, cup_id="ethanol", end_step=19
+    )
+    assert evidence["median_dominance"] == pytest.approx(0.4)
+    assert evidence["dominance_pass_fraction"] == pytest.approx(0.05)
+    assert evidence["evidence_accepted"] is False
+
+    recorder._rows = [
+        {"ppm": np.array([8.0, 2.0], dtype=np.float32)} for _ in range(20)
+    ]
+    evidence = collector._recent_decision_evidence(
+        recorder, cup_id="ethanol", end_step=19
+    )
+    assert evidence["median_dominance"] == pytest.approx(0.8)
+    assert evidence["evidence_accepted"] is True
 
 
 def test_odor_config_derives_steps_from_rate_and_duration():
@@ -72,6 +192,22 @@ def test_collapse_keep_mask_keeps_decision_frames_only():
     ]
 
 
+def test_sniff_landmarks_are_sparse_deterministic_and_include_decision():
+    events = [{"start_step": 20, "end_step": 219}]
+    first = sniff_landmark_steps(
+        events, rate_hz=20.0, landmarks_s=DEFAULT_SNIFF_LANDMARKS_S,
+        jitter_s=0.1, seed=7,
+    )
+    second = sniff_landmark_steps(
+        events, rate_hz=20.0, landmarks_s=DEFAULT_SNIFF_LANDMARKS_S,
+        jitter_s=0.1, seed=7,
+    )
+    assert first == second
+    assert first[-1] == 219
+    assert len(first) == len(DEFAULT_SNIFF_LANDMARKS_S) + 1
+    assert all(20 <= index <= 219 for index in first)
+
+
 def test_attach_odor_uses_latest_completed_sniff(tmp_path: Path):
     t_sniff, c = 4, 8
     voltage = np.stack(
@@ -94,6 +230,71 @@ def test_attach_odor_uses_latest_completed_sniff(tmp_path: Path):
     assert float(odor[3, 0, 0]) == 2.0
 
 
+def test_attach_odor_uses_causal_active_sniff_prefix_and_padding_mask():
+    voltage = np.arange(4 * 2, dtype=np.float32).reshape(1, 4, 2) + 1
+    odor, valid, padding = attach_odor(
+        np.array([1, 2, 3, 5, 6]),
+        voltage=voltage,
+        start_steps=np.array([2]),
+        end_steps=np.array([5]),
+        t_sniff=4,
+        num_channels=2,
+        return_padding_mask=True,
+    )
+    assert valid.tolist() == [False, True, True, True, True]
+    assert padding[0].tolist() == [True, True, True, True]
+    assert padding[1].tolist() == [True, True, True, False]
+    assert padding[2].tolist() == [True, True, False, False]
+    np.testing.assert_array_equal(odor[1, -1], voltage[0, 0])
+    np.testing.assert_array_equal(odor[2, -2:], voltage[0, :2])
+    np.testing.assert_array_equal(odor[3], voltage[0])
+    np.testing.assert_array_equal(odor[4], voltage[0])
+
+
+def test_continuous_odor_history_is_causal_and_crosses_sniff_boundaries():
+    voltage = np.arange(12 * 2, dtype=np.float32).reshape(12, 2)
+    odor, valid, padding = attach_continuous_odor(
+        np.array([1, 7, 11]), voltage=voltage, history_steps=5,
+    )
+    assert valid.tolist() == [True, True, True]
+    assert padding[0].tolist() == [True, True, True, False, False]
+    np.testing.assert_array_equal(odor[1], voltage[3:8])
+    np.testing.assert_array_equal(odor[2], voltage[7:12])
+
+
+def test_calibrated_emission_separates_concentration_and_filament_rate():
+    params = calibrated_emission_parameters(
+        10.0, emission_scale=0.06, concentration_exponent=0.5,
+        filaments_per_second=15,
+    )
+    assert params["filament_ppm_center"] == pytest.approx(0.6)
+    assert params["num_filaments_sec"] == 15
+
+
+def test_active_second_sniff_replaces_completed_first_sniff_causally():
+    voltage = np.stack(
+        [
+            np.ones((4, 2), dtype=np.float32),
+            np.full((4, 2), 2.0, dtype=np.float32),
+        ]
+    )
+    odor, valid, padding = attach_odor(
+        np.array([6, 11]),
+        voltage=voltage,
+        start_steps=np.array([2, 10]),
+        end_steps=np.array([5, 13]),
+        t_sniff=4,
+        num_channels=2,
+        return_padding_mask=True,
+    )
+    assert valid.tolist() == [True, True]
+    np.testing.assert_array_equal(odor[0], voltage[0])
+    assert padding[0].tolist() == [False, False, False, False]
+    assert padding[1].tolist() == [True, True, False, False]
+    np.testing.assert_array_equal(odor[1, -2:], voltage[1, :2])
+    assert not np.any(odor[1] == 1.0)
+
+
 def test_write_odor_events_slices_episode_npz(tmp_path: Path):
     t, c, g = 12, 8, 2
     sniff = 3
@@ -114,6 +315,13 @@ def test_write_odor_events_slices_episode_npz(tmp_path: Path):
             "decision": "reject",
             "robot_sniff_pose": [0.1, 0.0, 1.0],
             "sensor_object_distance": 0.12,
+            "decision_window_s": 1.0,
+            "median_total_ppm": 20.0,
+            "median_intended_ppm": 16.0,
+            "median_dominance": 0.8,
+            "presence_pass_fraction": 1.0,
+            "dominance_pass_fraction": 1.0,
+            "evidence_accepted": True,
         }
     ]
     write_odor_events(
@@ -128,6 +336,8 @@ def test_write_odor_events_slices_episode_npz(tmp_path: Path):
     np.testing.assert_array_equal(arrays["voltage"][0], voltages[2:5])
     meta = json.loads((tmp_path / "odor_events.json").read_text())
     assert meta["events"][0]["decision"] == "reject"
+    assert meta["events"][0]["median_dominance"] == pytest.approx(0.8)
+    assert meta["events"][0]["evidence_accepted"] is True
 
 
 def test_collapse_episode_steps_drops_holds_and_zero_actions():
@@ -143,6 +353,22 @@ def test_collapse_episode_steps_drops_holds_and_zero_actions():
     assert n_hold == 2  # two sniff_hold steps dropped (1,2); 3 kept
     assert 4 not in keep.tolist()
     assert keep.tolist() == [0, 3, 5]
+
+
+def test_collapse_episode_steps_protects_zero_action_sniff_landmarks():
+    phase = np.array([0, 1, 1, 1, 1, 0], dtype=np.int8)
+    action7 = np.zeros((6, 7), dtype=np.float32)
+    action7[0, 0] = 0.5
+    action7[5, 0] = 0.4
+    keep, n_hold, n_noop = collapse_episode_steps(
+        phase=phase,
+        action7=action7,
+        sniff_end_steps=[4],
+        sniff_landmarks=[2],
+    )
+    assert keep.tolist() == [0, 2, 4, 5]
+    assert n_hold == 2
+    assert n_noop == 0
 
 
 def test_liquid_aliases_exist():
