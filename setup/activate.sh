@@ -22,6 +22,13 @@ fi
 [ -f "$_odorsim_root/gaden/install/setup.bash" ] && \
   source "$_odorsim_root/gaden/install/setup.bash"
 
+# The shell may already contain another GADEN workspace from .bashrc.
+# Keep this repository's rebuilt core first so odor_gaden_rt cannot silently
+# load a stale ABI-compatible-looking libgaden from that earlier workspace.
+_odorsim_gaden_lib="$_odorsim_root/gaden/install/gaden_common/lib"
+_odorsim_gaden_msgs_lib="$_odorsim_root/gaden/install/gaden_msgs/lib"
+export LD_LIBRARY_PATH="$_odorsim_gaden_lib:$_odorsim_gaden_msgs_lib:${LD_LIBRARY_PATH:-}"
+
 # 3. our ROS overlay (exists once Phase 2 is built)
 [ -f "$_odorsim_root/ros2_ws/install/setup.bash" ] && \
   source "$_odorsim_root/ros2_ws/install/setup.bash"

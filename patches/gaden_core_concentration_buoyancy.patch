@@ -1,0 +1,127 @@
+diff --git a/include/gaden/RunningSimulation.hpp b/include/gaden/RunningSimulation.hpp
+index 8b7021a..6575236 100644
+--- a/include/gaden/RunningSimulation.hpp
++++ b/include/gaden/RunningSimulation.hpp
+@@ -21,6 +21,8 @@ namespace gaden
+             float filamentGrowthGamma = 10.0;     //[cm²/s] Growth ratio of the filament_std
+             float filamentNoise_std = 0.02;       // STD to add some "variablity" to the filament location
+             float numFilaments_sec = 10;          // How many filaments to release per second
++            float buoyancyTau = 0.0;               // [s] experimental buoyant-drift relaxation; 0 disables it
++            bool originalTerminalVelocity = false; // dimensionally flawed legacy GADEN model; ablation only
+             size_t expectedNumIterations = 600;   // To give initial size to filament vector. If you run the simulator longer than this, there will be a reallocation -- so, bad for performance :_(
+ 
+             std::optional<LoopConfig> windLoop; // if this is not null, the simulation advances the wind sequence as time passes
+@@ -87,4 +89,4 @@ namespace gaden
+         std::unique_ptr<class GPUAcceleration> gpuAcc;
+         std::vector<class ComputeConcentrationCommand> gpuCommands;
+     };
+-} // namespace gaden
+\ No newline at end of file
++} // namespace gaden
+diff --git a/src/RunningSimulation.cpp b/src/RunningSimulation.cpp
+index 176bb20..a390dae 100644
+--- a/src/RunningSimulation.cpp
++++ b/src/RunningSimulation.cpp
+@@ -1,6 +1,7 @@
+ #include "gaden/RunningSimulation.hpp"
+ #include "YAML_Conversions.hpp"
+ #include "gaden/datatypes/GasTypes.hpp"
++#include "gaden/internal/Buoyancy.hpp"
+ #include "gaden/internal/MathUtils.hpp"
+ #include "gaden/internal/Serialization.hpp"
+ #include <fstream>
+@@ -16,6 +17,8 @@ namespace gaden
+     RunningSimulation::RunningSimulation(Parameters params, std::shared_ptr<EnvironmentConfiguration> const& envConfig)
+         : parameters(params), Simulation(envConfig)
+     {
++        GADEN_VERIFY(parameters.buoyancyTau >= 0.f, "buoyancyTau must be non-negative");
++
+         if (parameters.windLoop)
+             config->windSequence.loopConfig = *parameters.windLoop;
+ 
+@@ -167,11 +170,6 @@ namespace gaden
+     {
+         Filament& filament = activeFilaments->at(i);
+ 
+-        // Estimte filament acceleration due to gravity & Bouyant force (for the given gas_type):
+-        constexpr float g = 9.8;
+-        constexpr float specific_gravity_air = 1; //[dimensionless]
+-        size_t gasIndex = static_cast<size_t>(simulationMetadata.source->gasType);
+-
+         try
+         {
+             // Get 3D cell of the filament center
+@@ -183,18 +181,32 @@ namespace gaden
+             gaden::Vector3 windVec = SampleWind(cellIdx);
+             Vector3 newPosition = filament.position + windVec * parameters.deltaTime;
+ 
+-            // 2. Simulate Gravity & Bouyant Force
+-            //------------------------------------
+-            // OLD approach: using accelerations (pure gas)
+-
+-            // float accel = g * (specific_gravity_air - SpecificGravity[gasIndex]) / SpecificGravity[gasIndex];
+-            // newpos_z = filament.position_z + 0.5*accel*pow(parameters.deltaTime,2);
+-
+-            // Approximation from "Terminal Velocity of a Bubble Rise in a Liquid Column", World Academy of Science, Engineering and Technology 28 2007
+-            constexpr float ro_air = 1.205; //[kg/m³] density of air
+-            constexpr float mu = 19 * 1e-6; //[kg/s·m] dynamic viscosity of air
+-            float terminal_buoyancy_velocity = (g * (1 - SpecificGravity.at(gasIndex)) * ro_air * ConcentrationAtCenter(filament) * 1e-6) / (18 * mu);
+-            newPosition.z += terminal_buoyancy_velocity * parameters.deltaTime;
++            // 2. Concentration-dependent buoyancy drift. This uses exactly
++            // one lookup of this filament's center concentration; as the
++            // filament expands and dilutes, its relative drift decays.
++            const size_t gasIndex = static_cast<size_t>(simulationMetadata.source->gasType);
++            const float centerConcentrationPPM = ConcentrationAtCenter(filament);
++            float buoyancyDriftVelocity = 0.f;
++            if (parameters.originalTerminalVelocity)
++            {
++                // Preserve the historical GADEN expression only for ablation.
++                // Its dimensional inconsistency makes it unsuitable as the default.
++                constexpr float gravity = 9.8f;
++                constexpr float airDensity = 1.205f;
++                constexpr float airDynamicViscosity = 19e-6f;
++                buoyancyDriftVelocity =
++                    gravity * (1.f - SpecificGravity.at(gasIndex)) * airDensity
++                    * centerConcentrationPPM * 1e-6f
++                    / (18.f * airDynamicViscosity);
++            }
++            else
++            {
++                buoyancyDriftVelocity = BuoyancyDriftVelocity(
++                    centerConcentrationPPM,
++                    SpecificGravity.at(gasIndex),
++                    parameters.buoyancyTau);
++            }
++            newPosition.z += buoyancyDriftVelocity * parameters.deltaTime;
+ 
+             // 3. Add some variability (stochastic process)
+             //------------------------------------
+@@ -342,8 +354,8 @@ namespace gaden
+ 
+     void RunningSimulation::GetAABB(Filament const& filament, Vector3i& bbMin, Vector3i& bbMax)
+     {
+-        bbMin = config->environment.coordsToIndices(filament.position - filament.sigma * 3 / 100.f);
+-        bbMax = config->environment.coordsToIndices(filament.position + filament.sigma * 3 / 100.f);
++        bbMin = config->environment.coordsToIndices(filament.position - filament.sigma * 4 / 100.f);
++        bbMax = config->environment.coordsToIndices(filament.position + filament.sigma * 4 / 100.f);
+ 
+         bbMin.x = std::max(bbMin.x, 0);
+         bbMin.y = std::max(bbMin.y, 0);
+@@ -477,6 +489,8 @@ namespace gaden
+             FromYAML<float>     (yaml, "filamentGrowthGamma",       filamentGrowthGamma);
+             FromYAML<float>     (yaml, "filamentNoise_std",         filamentNoise_std);
+             FromYAML<float>     (yaml, "numFilaments_sec",          numFilaments_sec);
++            FromYAML<float>     (yaml, "buoyancyTau",               buoyancyTau);
++            FromYAML<bool>      (yaml, "originalTerminalVelocity",  originalTerminalVelocity);
+             FromYAML<size_t>    (yaml, "expectedNumIterations",     expectedNumIterations);
+             FromYAML<bool>      (yaml, "saveResults",               saveResults);
+             FromYAML<float>     (yaml, "saveDeltaTime",             saveDeltaTime);
+@@ -511,6 +525,8 @@ namespace gaden
+             emitter << YAML::Key << "filamentGrowthGamma"       << YAML::Value << filamentGrowthGamma;
+             emitter << YAML::Key << "filamentNoise_std"         << YAML::Value << filamentNoise_std;
+             emitter << YAML::Key << "numFilaments_sec"          << YAML::Value << numFilaments_sec;
++            emitter << YAML::Key << "buoyancyTau"               << YAML::Value << buoyancyTau;
++            emitter << YAML::Key << "originalTerminalVelocity"  << YAML::Value << originalTerminalVelocity;
+             emitter << YAML::Key << "expectedNumIterations"     << YAML::Value << expectedNumIterations;
+             emitter << YAML::Key << "saveResults"               << YAML::Value << saveResults;
+             emitter << YAML::Key << "saveDeltaTime"             << YAML::Value << saveDeltaTime;

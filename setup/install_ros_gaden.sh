@@ -88,15 +88,26 @@ git -C gaden_common/third_party/gaden_core submodule update --init \
 # this as a tracked patch because gaden/ itself is an ignored dependency clone.
 GADEN_CORE_DIR="$GADEN_DIR/gaden_common/third_party/gaden_core"
 GAS_PATCH="$REPO_ROOT/patches/gaden_core_add_excel_gases.patch"
-if git -C "$GADEN_CORE_DIR" apply --reverse --check "$GAS_PATCH" >/dev/null 2>&1; then
-  echo "==> OdorSim gas patch already applied."
-elif git -C "$GADEN_CORE_DIR" apply --check "$GAS_PATCH"; then
-  git -C "$GADEN_CORE_DIR" apply "$GAS_PATCH"
-  echo "==> Applied OdorSim gas patch."
-else
-  echo "ERROR: cannot apply $GAS_PATCH to the checked-out gaden_core revision." >&2
-  exit 1
-fi
+BUOYANCY_PATCH="$REPO_ROOT/patches/gaden_core_concentration_buoyancy.patch"
+RESERVE_PATCH="$REPO_ROOT/patches/gaden_core_fix_filament_reserve.patch"
+
+apply_gaden_core_patch() {
+  local patch_path="$1"
+  local patch_name="$2"
+  if git -C "$GADEN_CORE_DIR" apply --reverse --check "$patch_path" >/dev/null 2>&1; then
+    echo "==> OdorSim $patch_name patch already applied."
+  elif git -C "$GADEN_CORE_DIR" apply --check "$patch_path"; then
+    git -C "$GADEN_CORE_DIR" apply "$patch_path"
+    echo "==> Applied OdorSim $patch_name patch."
+  else
+    echo "ERROR: cannot apply $patch_path to the checked-out gaden_core revision." >&2
+    exit 1
+  fi
+}
+
+apply_gaden_core_patch "$GAS_PATCH" "gas"
+apply_gaden_core_patch "$BUOYANCY_PATCH" "concentration-buoyancy"
+apply_gaden_core_patch "$RESERVE_PATCH" "filament-reserve"
 
 # ---------------- 3b. GLM (needed by DDA, NOT a registered submodule) ----------------
 GLM_DIR="$GADEN_DIR/gaden_common/third_party/gaden_core/third_party/DDA/third_party/glm"

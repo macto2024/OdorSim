@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "model": "log_linear_nominal_to_local_median",
+  "source_dataset": "analysis/odor_encoder/emission_grid_power/exp_0p5_scale_0p06",
+  "sniff_radius_m": 0.08,
+  "trajectory_count": 55,
+  "emission_configuration": {
+    "buoyancy_tau_s": 0.0,
+    "emission_concentration_exponent": 0.5,
+    "emission_scale": 0.06,
+    "filaments_per_second": 15,
+    "warmup_s": 8.0,
+    "wind_regime": "zero"
+  },
+  "log_intercept": 2.461242629285462,
+  "log_slope": 0.5001455855136939,
+  "log_space_r_squared": 0.9978390625769489,
+  "nominal_support_ppm": [
+    1.0040088891983032,
+    93.08465576171872
+  ],
+  "local_median_support_ppm": [
+    11.509641647338869,
+    118.09667205810548
+  ],
+  "inverse": "nominal = exp((log(desired_local_ppm) - log_intercept) / log_slope)"
+}

@@ -2,6 +2,7 @@
 
 import unittest
 
+from odor_sim.sensors.mox_pid import MOXSensor
 from tools.validate_mox_runtime import validate_case
 
 
@@ -27,6 +28,12 @@ class MoxRuntimeValidationTests(unittest.TestCase):
         self.assertIsNotNone(result["recovery_tau_measured_s"])
         self.assertTrue(result["all_pass"])
         self.assertTrue(trace)
+
+    def test_out_of_range_ppm_is_not_clamped_to_calibration_boundary(self):
+        sensor = MOXSensor("TGS2610")
+        at_100 = sensor._ideal_rs_r0({"acetone": 100.0})
+        at_1000 = sensor._ideal_rs_r0({"acetone": 1000.0})
+        self.assertLess(at_1000, at_100)
 
 
 if __name__ == "__main__":

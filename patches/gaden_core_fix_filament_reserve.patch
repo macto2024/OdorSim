@@ -1,0 +1,21 @@
+diff --git a/src/RunningSimulation.cpp b/src/RunningSimulation.cpp
+index d11e730..76071a6 100644
+--- a/src/RunningSimulation.cpp
++++ b/src/RunningSimulation.cpp
+@@ -25,8 +25,14 @@ namespace gaden
+         // so, to keep things more or less the same (good), we will scale the noise std by the most commonly used delta time -- 1/10th of a second
+         parameters.filamentNoise_std *= 10;
+ 
+-        filaments1.reserve(params.expectedNumIterations * params.numFilaments_sec / params.deltaTime);
+-        filaments2.reserve(params.expectedNumIterations * params.numFilaments_sec / params.deltaTime);
++        // expectedNumIterations is a step count. Each step spans deltaTime
++        // seconds, so expected emitted filaments are steps * seconds/step *
++        // filaments/second. Dividing by deltaTime over-reserved by 1/dt^2
++        // (400x at 20 Hz), which made multi-source scenes needlessly fragile.
++        const auto expectedFilaments = static_cast<size_t>(
++            std::ceil(params.expectedNumIterations * params.deltaTime * params.numFilaments_sec));
++        filaments1.reserve(expectedFilaments);
++        filaments2.reserve(expectedFilaments);
+         isActive.reserve(filaments1.capacity());
+         activeFilaments = &filaments1;
+         auxFilamentsVector = &filaments2;

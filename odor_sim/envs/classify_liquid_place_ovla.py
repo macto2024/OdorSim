@@ -31,9 +31,9 @@ class ClassifyLiquidPlaceOVLA(ClassifyLiquidPlace):
     plate_y_range = (-0.06, 0.06)
     # Two small cup slots, split left/right so XY does not identify the liquid.
     cup_left_x_range = (0.12, 0.20)
-    cup_left_y_range = (-0.16, -0.08)
+    cup_left_y_range = (-0.14, -0.11)
     cup_right_x_range = (0.12, 0.20)
-    cup_right_y_range = (0.08, 0.16)
+    cup_right_y_range = (0.11, 0.14)
 
     @property
     def gas_types(self) -> list[str]:

@@ -1,10 +1,17 @@
 # Scripted odor pick-place collection
 
-Headless **smell → decide → pick-place** demos on **`ClassifyLiquidPlaceOVLA`**. Two identical porcelain (white) cups sit in tight left/right slots with a plate; the arm sniffs a random first cup (SAMPLE), purges between cups (FILTER), then either places the instructed liquid on the plate or returns home if it is absent.
+Headless **smell → decide → pick-place** demos on **`ClassifyLiquidPlaceOVLA`**. Two identical porcelain cups sit in randomized left/right slots and both physical gas sources remain active. The arm sniffs cup 1 and, when it is wrong, moves directly to cup 2 without resetting the MOX state.
 
 Use this for odor-conditioned OVLA policies. For **vision-only** mug→plate demos, see [scripted-collection.md](scripted-collection.md) (`collect_place_oft` / `OdorPlace`).
 
-Ground-truth liquid IDs drive the scripted decision so demos succeed reliably; recorded SAMPLE voltages are what a learned policy must use. Default **`odor_mode=discrete`** (GADEN + MOX array). Default sensors and VOC names match the Smellnet / ScentFormerAB checkpoint.
+Ground-truth liquid IDs drive the scripted decision so demos succeed reliably. Sensing is continuous at 20 Hz using the fixed eight-channel array. Main collection uses zero wind, disabled original terminal velocity, disabled experimental buoyancy, and the calibrated separated emission model (`exponent=0.5`, `scale=0.06`, `15 filaments/s`).
+
+The two requested local source conditions are paired rather than independently
+sampled: `C_A=C_base*r`, `C_B=C_base/r`, with
+`r ~ LogUniform(0.8, 1.25)`. Cup slots produce approximately 22–29 cm XY
+spacing. A grasp/reject decision is retained only when the final causal second
+has median total concentration at least 5 ppm, median intended-gas dominance at
+least 70%, and at least 80% of samples pass both evidence thresholds.
 
 ## Quick collect
 
@@ -14,12 +21,15 @@ source setup/activate.sh
 # Parallel MuJoCo + GADEN workers (each gets its own ROS_DOMAIN_ID)
 python -m odor_sim.bridge.collect_odor_place_oft \
   --out-dir /root/Odorbot/datasets/odor_ovla_oft \
-  --num-demos 50 \
-  --num-workers 4 \
+  --num-demos 1500 \
+  --num-workers 2 \
   --quiet
 ```
 
-Resume-safe via `manifest.csv`: re-run the same command; finished episodes are skipped. Stop a serial run before switching to workers so domain IDs / `kill_all` stay clean.
+Resume-safe via `manifest.csv`: re-run the same command; finished plan indices are
+skipped. The manifest fixes target-first/target-second order before collection,
+so a failed target-second attempt cannot retry as target-first. Stop a serial run
+before switching to workers so domain IDs / `kill_all` stay clean.
 
 Single-episode / debug:
 
@@ -31,25 +41,55 @@ python -m odor_sim.bridge.scripted_odor_place \
   --out-dir datasets/teleop/odor_place_scripted
 ```
 
-Build RLDS (collapses sniff/filter hovers; attaches `observation.odor`):
+Build RLDS. This keeps sparse sniff HOLD landmarks at approximately
+0/0.25/0.5/1/2/3/5/7/9 seconds plus the final decision frame, drops the redundant
+20-Hz hover ticks, and attaches the causal odor prefix available at each
+retained frame:
 
 ```bash
 python -m odor_sim.recording.build_rlds_odor_ovla \
   --input /root/Odorbot/datasets/odor_ovla_oft/raw \
   --manifest /root/Odorbot/datasets/odor_ovla_oft/manifest.csv \
   --output /root/Odorbot/datasets/rlds \
-  --dataset-name odorsim_ovla_odorplace_sniff10s
+  --dataset-name odorsim_ovla_odorplace_sniff10s_hold_v2 \
+  --odor-history-s 5
 ```
+
+Validate a 30-episode pilot before scaling:
+
+```bash
+python -m odor_sim.recording.validate_odor_ovla_collection \
+  --dataset datasets/odor_ovla_physical_pilot_v3 \
+  --expected-episodes 30 \
+  --expected-pairs 30
+```
+
+The command writes `validation.json` inside the dataset and returns a non-zero
+exit status when a required acceptance criterion fails. Dominance >=90% on 70%
+of decisions is reported as a preference warning rather than a hard failure.
+
+Old raw demonstrations collected with discrete sampling, the legacy emission
+mapping, terminal velocity, or a forced FILTER phase must be recollected.
+Rebuilding RLDS alone cannot change their physical sensor history. The field
+`odor_padding_mask` is `true` for left-padding and must be passed to the
+ScentFormer attention mask. Do not apply another no-op/zero-action filter in
+the OVLA input pipeline, because the protected zero-delta actions are the HOLD
+supervision.
+
+RLDS stores the raw rolling five-second MOX window. The frozen encoder's
+deployment API is `model.encode(...)`; pass only its latent odor embedding to
+OVLA. Do not concatenate gas probabilities, presence, intensity, or recovery.
 
 ## What each episode does
 
 Default scene: **2 porcelain cups** drawn uniformly from the ScentFormerAB VOC pool
 (`ethanol`, `methanol`, `acetone`, `acetic_acid`, `ethyl_acetate`, `toluene`).
 
-1. Hover above a randomly chosen first cup → **SAMPLE** hold (`--sniff-duration`, default 10 s)
+1. Hover the e-nose about 4 cm above a randomly chosen first source and HOLD (`--sniff-duration`, default 10 s). The gripper remains 8 cm high; the sensor site is mounted 4 cm below it.
 2. If that cup is the instructed liquid → grasp immediately from the sniff hover and place on the plate
-3. Else → move aside → **FILTER** hold (default `1.5 × sniff`) → try the next cup
-4. If no cup matches → return to the post-reset home pose (instructed liquid **absent**)
+3. Else → raise to a collision-safe high staging pose, move toward the other cup
+   without a dwell/reset, descend and HOLD → grasp target. MOX state remains
+   continuous throughout this direct transition.
 
 Language instruction looks like: `put the cup of ethanol on the plate`.
 
@@ -66,7 +106,7 @@ Language instruction looks like: `put the cup of ethanol on the plate`.
   manifest.csv
 ```
 
-`T_sniff = round(odor_sampling_rate * sniff_duration_s)` (200 at the 10 s / 20 Hz default). Changing sniff duration is a new collection run (put it in a separate `--out-dir` / RLDS name).
+Raw event traces retain the full 10-second sniff. RLDS uses a rolling 5-second history (`100 x 8` at 20 Hz) at each retained action step, left-padded only near episode startup.
 
 ## Important flags
 
@@ -75,13 +115,13 @@ Language instruction looks like: `put the cup of ethanol on the plate`.
 | `--num-demos` | 50 | Successful episodes to collect |
 | `--voc-pool` | 6 ScentFormer gases | Uniform draw per episode |
 | `--num-cups` | 2 | Cups on the table |
-| `--absent-frac` | 0.2 | Fraction where instructed liquid is not on the table |
+| `--absent-frac` | 0.0 | Fraction where instructed liquid is not on the table |
 | `--instructed` | (sampled) | Pin the language target; default samples present/absent |
 | `--sniff-duration` | 10 | Seconds hovering above a cup (SAMPLE) |
-| `--filter-hold-s` | 1.5× sniff | FILTER nose-rest after a wrong cup |
+| `--transition-mode` | `direct` | Direct carryover path; `physical_filter` is an ablation |
 | `--target-first-frac` | 0.5 | P(sniff instructed cup first) when present |
 | `--mox-models` | 8 Smellnet sensors | Encoder channel order |
-| `--odor-mode` | `discrete` | `discrete` / `continuous` / `none` |
+| `--odor-mode` | `continuous` | `continuous` is required for deployment collection |
 | `--num-workers` | 1 | Parallel processes (each owns ROS domain + GADEN) |
 | `--ros-domain-base` | 50 | Worker `i` uses `ROS_DOMAIN_ID=base+i` |
 

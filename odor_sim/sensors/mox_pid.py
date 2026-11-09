@@ -160,10 +160,12 @@ class MOXSensor:
             # G3 is deferred: gases without a measured workbook curve are ignored.
             if curve is None or not curve.get("runtime_supported", False) or conc <= 0.0:
                 continue
-            _, high = self._concentration_range
             coefficient = float(curve["coefficient_k"])
             exponent = float(curve["exponent_n"])
-            excess_conductance = coefficient * min(conc, high) ** exponent
+            # Do not hide out-of-calibration plume values at the registry's
+            # upper boundary. Dataset collection rejects unsuitable physical
+            # ppm; the sensor model extrapolates its fitted curve transparently.
+            excess_conductance = coefficient * conc ** exponent
             excess_conductance_total += excess_conductance
             components.append((curve, excess_conductance))
         rs_r0 = self.sensitivity_air / (1.0 + excess_conductance_total)
@@ -322,9 +324,9 @@ class ContinuousEnose:
 class SamplingEnose:
     """Valve-gated e-nose driven by the ternary ``enose_state`` action.
 
-    The sensor only sees the plume while ``enose_state == 1`` (sample); in
-    ``idle(0)`` and ``filter(-1)`` it is exposed to clean air (ppm = 0) so its
-    dynamic response decays/purges toward baseline. Completed sample windows are
+    The MOX state always advances from the physically queried ``ppm_by_gas``. The
+    ternary state controls window annotation only; idle and filter do not force ppm
+    to zero or reset sensor memory. Completed sample windows are
     collected with their voltage/ppm traces and a ground-truth odor-class label
     (the gas with the highest mean ppm over the window).
 
@@ -355,8 +357,7 @@ class SamplingEnose:
         """
         self._step += 1
         sampling = int(enose_state) == self.SAMPLE
-        exposure = ppm_by_gas if sampling else {}
-        self.sensor.update(exposure)
+        self.sensor.update(ppm_by_gas)
         voltage = self.sensor.voltage
 
         completed = None
